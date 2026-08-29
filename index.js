@@ -34,7 +34,7 @@ app.use(express.json({ limit: '1mb' }))
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,                    // 10 uploads per IP per window
+  max: 50,                    // 50 uploads per IP per window
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many uploads from this IP. Please wait before trying again.' },
