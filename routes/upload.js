@@ -27,14 +27,17 @@ const router = Router()
 // ── Allowed file types ───────────────────────────────────────────────────────
 
 const ALLOWED = {
-  'video/mp4':  { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 },
-  'video/webm': { ext: 'webm', category: 'videos', maxBytes: 50 * 1024 * 1024 },
-  'image/gif':  { ext: 'gif',  category: 'gifs',   maxBytes: 20 * 1024 * 1024 },
-  'image/png':  { ext: 'png',  category: 'images', maxBytes: 10 * 1024 * 1024 },
-  'image/jpeg': { ext: 'jpg',  category: 'images', maxBytes: 10 * 1024 * 1024 },
-  'image/webp': { ext: 'webp', category: 'images', maxBytes: 10 * 1024 * 1024 },
-  'audio/mpeg': { ext: 'mp3',  category: 'sounds', maxBytes: 10 * 1024 * 1024 },
-  'audio/wav':  { ext: 'wav',  category: 'sounds', maxBytes: 20 * 1024 * 1024 },
+  'video/mp4':       { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 },
+  'video/x-m4v':    { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 }, // iPhone / iTunes M4V → stored as mp4
+  'video/quicktime': { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 }, // .mov from iOS Camera
+  'video/webm':      { ext: 'webm', category: 'videos', maxBytes: 50 * 1024 * 1024 },
+  'image/gif':       { ext: 'gif',  category: 'gifs',   maxBytes: 20 * 1024 * 1024 },
+  'image/png':       { ext: 'png',  category: 'images', maxBytes: 10 * 1024 * 1024 },
+  'image/jpeg':      { ext: 'jpg',  category: 'images', maxBytes: 10 * 1024 * 1024 },
+  'image/webp':      { ext: 'webp', category: 'images', maxBytes: 10 * 1024 * 1024 },
+  'audio/mpeg':      { ext: 'mp3',  category: 'sounds', maxBytes: 10 * 1024 * 1024 },
+  'audio/wav':       { ext: 'wav',  category: 'sounds', maxBytes: 20 * 1024 * 1024 },
+  'audio/x-wav':     { ext: 'wav',  category: 'sounds', maxBytes: 20 * 1024 * 1024 }, // alternate WAV MIME some browsers send
 }
 
 // ── Multer (memory storage — magic-byte check happens before any write) ──────
