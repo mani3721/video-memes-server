@@ -92,4 +92,26 @@ router.delete('/reject/:memeId', async (req, res) => {
   res.json({ ok: true })
 })
 
+// ── PATCH /api/admin/rename/:memeId ──────────────────────────────────────────
+router.patch('/rename/:memeId', async (req, res) => {
+  const { memeId } = req.params
+  const title = (req.body.title ?? '').trim()
+
+  if (!title) return res.status(400).json({ error: 'title is required.' })
+  if (title.length > 200) return res.status(400).json({ error: 'title must be 200 chars or fewer.' })
+
+  const { data, error } = await supabase
+    .from('memes')
+    .update({ title })
+    .eq('id', memeId)
+    .select('id, title')
+    .single()
+
+  if (error || !data) {
+    console.error('[admin/rename]', error?.message)
+    return res.status(404).json({ error: 'Meme not found.' })
+  }
+  res.json({ ok: true, meme: data })
+})
+
 export default router
