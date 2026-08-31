@@ -1,21 +1,76 @@
 import express from 'express'
+import rateLimit from 'express-rate-limit'
 
 const router = express.Router()
 
 const FORMAT_MIME = {
   mp3: 'audio/mpeg',
+  wav: 'audio/wav',
   pcm: 'audio/L16',
 }
 
-router.post('/tts', async (req, res) => {
+const ttsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many TTS requests. Please wait a moment.' },
+})
+
+router.post('/tts', ttsLimiter, async (req, res) => {
   try {
-    const { text, voiceId, format = 'mp3' } = req.body
+    const {
+      text,
+      reference_id,
+      format        = 'mp3',
+      sample_rate   = 44100,
+      mp3_bitrate   = 128,
+      latency       = 'normal',
+      // prosody
+      speed                        = 1,
+      volume                       = 0,
+      normalize_loudness           = true,
+      // generation
+      temperature                  = 0.7,
+      top_p                        = 0.7,
+      repetition_penalty           = 1.2,
+      chunk_length                 = 300,
+      min_chunk_length             = 50,
+      max_new_tokens               = 1024,
+      early_stop_threshold         = 1,
+      normalize                    = true,
+      condition_on_previous_chunks = true,
+    } = req.body
 
     if (!text || text.trim().length === 0) {
       return res.status(400).json({ error: 'Text is required' })
     }
 
     const audioFormat = FORMAT_MIME[format] ? format : 'mp3'
+
+    const body = {
+      text: text.trim(),
+      format: audioFormat,
+      sample_rate,
+      latency,
+      temperature,
+      top_p,
+      repetition_penalty,
+      chunk_length,
+      min_chunk_length,
+      max_new_tokens,
+      early_stop_threshold,
+      normalize,
+      condition_on_previous_chunks,
+      prosody: {
+        speed,
+        volume,
+        normalize_loudness,
+      },
+    }
+
+    if (reference_id) body.reference_id = reference_id
+    if (audioFormat === 'mp3') body.mp3_bitrate = mp3_bitrate
 
     const response = await fetch('https://api.fish.audio/v1/tts', {
       method: 'POST',
@@ -24,18 +79,7 @@ router.post('/tts', async (req, res) => {
         'Content-Type': 'application/json',
         model: 's2.1-pro-free',
       },
-      body: JSON.stringify({
-        text: text.trim(),
-        reference_id: voiceId || undefined,
-        format: audioFormat,
-        sample_rate: 44100,
-        prosody: {
-          speed: 1,
-          volume: 0,
-          normalize_loudness: true,
-        },
-        normalize: true,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!response.ok) {
