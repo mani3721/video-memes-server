@@ -22,10 +22,10 @@ router.post('/tts', async (req, res) => {
       headers: {
         Authorization: `Bearer ${process.env.FISH_AUDIO_API_KEY}`,
         'Content-Type': 'application/json',
+        model: 's2.1-pro-free',
       },
       body: JSON.stringify({
         text: text.trim(),
-        model: 's2.1-pro-free',
         reference_id: voiceId || undefined,
         format: audioFormat,
         sample_rate: 44100,
