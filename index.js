@@ -7,6 +7,7 @@ import trackDownloadRouter from './routes/trackDownload.js'
 import bulkDownloadRouter from './routes/bulkDownload.js'
 import favoritesRouter from './routes/favorites.js'
 import adminRouter from './routes/admin.js'
+import ttsRouter from './routes/textToSpeech.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -56,6 +57,7 @@ app.use('/api/track-download', trackDownloadRouter)
 app.use('/api/bulk-download', bulkDownloadRouter)
 app.use('/api/favorites', favoritesRouter)
 app.use('/api/admin', adminRouter)
+app.use('/api', ttsRouter)
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
