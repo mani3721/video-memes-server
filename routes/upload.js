@@ -21,6 +21,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { spaces, BUCKET, CDN_URL } from '../spacesClient.js'
 import { supabase } from '../supabaseClient.js'
 import { requireAuth } from '../middleware/auth.js'
+import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 
 const router = Router()
 
@@ -175,6 +176,14 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
       console.error('[upload] Supabase insert error:', dbErr.message)
       return res.status(500).json({ error: 'File uploaded to Spaces but metadata save failed. Contact support.' })
     }
+
+    // Uploads are published immediately, so the new page must appear in the
+    // sitemap now rather than at the next cache expiry. Non-blocking.
+    onContentChanged({
+      reason: 'upload',
+      memes: [meme],
+      paths: [...FEED_PATHS, feedPathForCategory(meme.category)].filter(Boolean),
+    })
 
     return res.status(201).json({ meme })
   } catch (err) {
