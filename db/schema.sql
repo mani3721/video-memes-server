@@ -40,6 +40,9 @@ CREATE TABLE public.memes (
   fire_count       BIGINT      NOT NULL DEFAULT 0,
   skull_count      BIGINT      NOT NULL DEFAULT 0,
 
+  -- Curation
+  is_hot           BOOLEAN     NOT NULL DEFAULT FALSE,   -- admin pin: floats to top of every feed
+
   -- Access control
   uploader_id      UUID        REFERENCES auth.users(id) ON DELETE SET NULL,
   is_published     BOOLEAN     NOT NULL DEFAULT FALSE,
