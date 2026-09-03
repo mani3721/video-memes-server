@@ -42,11 +42,18 @@ crawler → videsaur.co.in/sitemap-memes.xml
 | `/sitemap-gifs.xml` | `category = gifs` |
 | `/sitemap-audio.xml` | `category = sounds` |
 | `/sitemap-templates.xml` | `category = images` |
+| `/sitemap-blog.xml` | `public.blog_posts` where `status = 'published'` |
 
 `sitemap-templates.xml` is not in the original spec, which named memes, gifs and
 audio. It exists because the `images` category (meme templates, the `/templates`
 feed) is real published content and would otherwise have been silently dropped
 from the sitemap entirely.
+
+`sitemap-blog.xml` reads a different table with a different URL shape
+(`/blog/:slug`), so each group in `CONTENT_GROUPS` declares a `source` and the
+generator dispatches through `countFor` / `latestFor` / `fetchFor`. Blog posts
+get a flat `weekly` / `0.6` rather than the download-driven tiers used for
+assets — editorial prose is rewritten rarely and has no download count.
 
 ### Pagination
 
@@ -166,10 +173,43 @@ adds a matching partial index and tightens the RLS `SELECT` policy so a flagged
 asset stops being publicly readable — otherwise a takedown would remove the URL
 from the sitemap while leaving the page live.
 
-**The generator probes for the column at boot** and falls back to filtering on
-`is_published` alone if the migration has not been applied, logging a warning
-each start. So the deploy order does not matter, but until you run the migration
-the only takedown path is the hard delete in `DELETE /api/admin/reject`.
+### content_status
+
+`db/migrations/003_content_depth.sql` adds a four-state `content_status`
+(`draft` / `published` / `flagged` / `removed`) as the admin-facing control. It
+does **not** replace the two booleans: a trigger keeps all three in sync in both
+directions, so the sitemap's `is_published AND NOT is_flagged` filter stays
+correct for every state and needed no change.
+
+| status | is_published | is_flagged | in sitemap |
+| --- | --- | --- | --- |
+| `draft` | false | false | no |
+| `published` | true | false | **yes** |
+| `flagged` | *preserved* | true | no |
+| `removed` | false | true | no |
+
+`flagged` deliberately leaves `is_published` alone, so lifting a review hold
+restores whatever state the asset had before it.
+
+### Feature probes — why deploy order does not matter
+
+The server and the SQL deploy independently, so the generator probes for each
+optional database feature once per process and degrades that feature alone
+rather than failing every file:
+
+| Probe | Missing behaviour |
+| --- | --- |
+| `memes.is_flagged` (002) | DMCA/policy exclusion inactive; only `is_published` gates the sitemap |
+| `memes.description_long` (003) | `video:description` falls back to the templated sentence |
+| `public.blog_posts` (003) | `sitemap-blog.xml` serves an empty urlset |
+
+Each logs one warning at startup and is reported by
+`GET /api/admin/sitemap/status` under `migrations`.
+
+This matters more than it sounds: selecting a column that does not exist fails
+the *entire* query, so without the `description_long` probe an unapplied
+migration would take a working sitemap down to a 503. Verified by running the
+full sitemap against a database with 003 unapplied — all seven files return 200.
 
 ## Environment variables
 

@@ -7,6 +7,8 @@ import trackDownloadRouter from './routes/trackDownload.js'
 import bulkDownloadRouter from './routes/bulkDownload.js'
 import favoritesRouter from './routes/favorites.js'
 import adminRouter from './routes/admin.js'
+import adminContentRouter from './routes/adminContent.js'
+import adminBlogRouter from './routes/adminBlog.js'
 import ttsRouter from './routes/textToSpeech.js'
 import sitemapRouter from './routes/sitemap.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
@@ -70,6 +72,10 @@ app.use('/api/upload', uploadRouter)
 app.use('/api/track-download', trackDownloadRouter)
 app.use('/api/bulk-download', bulkDownloadRouter)
 app.use('/api/favorites', favoritesRouter)
+// More specific admin mounts first — adminRouter owns /api/admin/:action paths
+// like /approve/:id, so a bare /api/admin mount would shadow these.
+app.use('/api/admin/content', adminContentRouter)
+app.use('/api/admin/blog', adminBlogRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api', ttsRouter)
 

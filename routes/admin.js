@@ -20,6 +20,7 @@ import { spaces, BUCKET } from '../spacesClient.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import { stats as sitemapStats } from '../lib/sitemap/cache.js'
 import { indexNowStatus } from '../lib/sitemap/indexnow.js'
+import { featureAvailability } from '../lib/sitemap/query.js'
 
 const router = Router()
 
@@ -161,8 +162,14 @@ router.patch('/rename/:memeId', async (req, res) => {
 })
 
 // ── GET /api/admin/sitemap/status ────────────────────────────────────────────
-router.get('/sitemap/status', (_req, res) => {
-  res.json({ cache: sitemapStats(), indexNow: indexNowStatus() })
+router.get('/sitemap/status', async (_req, res) => {
+  // `migrations` reports which optional DB features the generator detected, so
+  // an unapplied migration is visible here rather than only in the server log.
+  res.json({
+    cache: sitemapStats(),
+    indexNow: indexNowStatus(),
+    migrations: await featureAvailability(),
+  })
 })
 
 // ── POST /api/admin/sitemap/refresh ──────────────────────────────────────────
