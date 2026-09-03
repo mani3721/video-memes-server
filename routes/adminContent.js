@@ -11,8 +11,10 @@
  */
 
 import { Router } from 'express'
+import { DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { supabase } from '../supabaseClient.js'
+import { spaces, BUCKET } from '../spacesClient.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import {
   CATEGORIES,
@@ -179,6 +181,41 @@ router.patch('/:memeId', async (req, res) => {
   })
 
   res.json({ ok: true, item: { ...data, description_words: countWords(data.description_long) } })
+})
+
+// ── DELETE /api/admin/content/:memeId ────────────────────────────────────────
+router.delete('/:memeId', async (req, res) => {
+  const { memeId } = req.params
+
+  const { data: meme, error: fetchErr } = await supabase
+    .from('memes')
+    .select('id, title, category, spaces_key, thumbnail_spaces_key')
+    .eq('id', memeId)
+    .single()
+
+  if (fetchErr || !meme) return res.status(404).json({ error: 'Content not found.' })
+
+  const { error: delErr } = await supabase.from('memes').delete().eq('id', memeId)
+
+  if (delErr) {
+    console.error('[admin/content] delete failed:', delErr.message)
+    return res.status(500).json({ error: 'Failed to delete meme.' })
+  }
+
+  onContentChanged({
+    reason: 'delete',
+    memes: [meme],
+    paths: [...FEED_PATHS, feedPathForCategory(meme.category)].filter(Boolean),
+  })
+
+  const keys = [meme.spaces_key, meme.thumbnail_spaces_key].filter(Boolean)
+  if (keys.length) {
+    spaces
+      .send(new DeleteObjectsCommand({ Bucket: BUCKET, Delete: { Objects: keys.map((Key) => ({ Key })) } }))
+      .catch((err) => console.error('[admin/content] Spaces delete error:', err.message))
+  }
+
+  res.json({ ok: true })
 })
 
 export default router
