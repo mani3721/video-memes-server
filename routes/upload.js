@@ -22,6 +22,13 @@ import { spaces, BUCKET, CDN_URL } from '../spacesClient.js'
 import { supabase } from '../supabaseClient.js'
 import { requireAuth } from '../middleware/auth.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
+import ffmpeg from 'fluent-ffmpeg'
+import { writeFile, readFile, unlink } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 
 const router = Router()
 
@@ -61,11 +68,40 @@ function slugify(str) {
     .slice(0, 80)
 }
 
+async function extractVideoFrame(videoBuffer) {
+  const id = uuidv4()
+  const inputPath = join(tmpdir(), `${id}-input.mp4`)
+  const outputPath = join(tmpdir(), `${id}-thumb.jpg`)
+  try {
+    await writeFile(inputPath, videoBuffer)
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .seekInput(1)
+        .frames(1)
+        .output(outputPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run()
+    })
+    return await readFile(outputPath)
+  } finally {
+    await unlink(inputPath).catch(() => {})
+    await unlink(outputPath).catch(() => {})
+  }
+}
+
 async function generateThumbnail(buffer, mime) {
   if (mime.startsWith('image/')) {
     return sharp(buffer).resize(600, 600, { fit: 'cover' }).webp({ quality: 80 }).toBuffer()
   }
-  // Video/audio: grey placeholder. Wire up ffmpeg in production for real frames.
+  if (mime.startsWith('video/')) {
+    try {
+      const frameBuffer = await extractVideoFrame(buffer)
+      return sharp(frameBuffer).resize(600, 600, { fit: 'cover' }).webp({ quality: 80 }).toBuffer()
+    } catch {
+      // fall through to dark placeholder if ffmpeg fails
+    }
+  }
   return sharp({
     create: { width: 600, height: 600, channels: 3, background: { r: 18, g: 16, b: 28 } },
   })
