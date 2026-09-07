@@ -17,7 +17,7 @@ import multer from 'multer'
 import { v4 as uuidv4 } from 'uuid'
 import { fileTypeFromBuffer } from 'file-type'
 import sharp from 'sharp'
-import { PutObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { spaces, BUCKET, CDN_URL } from '../spacesClient.js'
 import { supabase } from '../supabaseClient.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -34,18 +34,32 @@ const router = Router()
 
 // ── Allowed file types ───────────────────────────────────────────────────────
 
+/**
+ * Accepted upload types.
+ *
+ * `format` is the value written to memes.format and is spelled out per entry
+ * rather than derived from `ext`. It used to be computed as
+ * ext.toUpperCase().replace('JPG', 'JPEG'), which silently produced three
+ * values the column's CHECK constraint rejects — 'WEBM' (the constraint wants
+ * 'WebM'), plus 'JPEG' and 'WEBP', which were never in the constraint at all.
+ * Every WebM, JPEG and WebP upload therefore failed *after* both files had
+ * already been written to Spaces.
+ *
+ * ⚠  These values must all appear in the CHECK on memes.format. See
+ *    db/migrations/007_upload_formats.sql.
+ */
 const ALLOWED = {
-  'video/mp4':       { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 },
-  'video/x-m4v':    { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 }, // iPhone / iTunes M4V → stored as mp4
-  'video/quicktime': { ext: 'mp4',  category: 'videos', maxBytes: 50 * 1024 * 1024 }, // .mov from iOS Camera
-  'video/webm':      { ext: 'webm', category: 'videos', maxBytes: 50 * 1024 * 1024 },
-  'image/gif':       { ext: 'gif',  category: 'gifs',   maxBytes: 20 * 1024 * 1024 },
-  'image/png':       { ext: 'png',  category: 'images', maxBytes: 10 * 1024 * 1024 },
-  'image/jpeg':      { ext: 'jpg',  category: 'images', maxBytes: 10 * 1024 * 1024 },
-  'image/webp':      { ext: 'webp', category: 'images', maxBytes: 10 * 1024 * 1024 },
-  'audio/mpeg':      { ext: 'mp3',  category: 'sounds', maxBytes: 10 * 1024 * 1024 },
-  'audio/wav':       { ext: 'wav',  category: 'sounds', maxBytes: 20 * 1024 * 1024 },
-  'audio/x-wav':     { ext: 'wav',  category: 'sounds', maxBytes: 20 * 1024 * 1024 }, // alternate WAV MIME some browsers send
+  'video/mp4':       { ext: 'mp4',  format: 'MP4',  category: 'videos', maxBytes: 50 * 1024 * 1024 },
+  'video/x-m4v':    { ext: 'mp4',  format: 'MP4',  category: 'videos', maxBytes: 50 * 1024 * 1024 }, // iPhone / iTunes M4V → stored as mp4
+  'video/quicktime': { ext: 'mp4',  format: 'MP4',  category: 'videos', maxBytes: 50 * 1024 * 1024 }, // .mov from iOS Camera
+  'video/webm':      { ext: 'webm', format: 'WebM', category: 'videos', maxBytes: 50 * 1024 * 1024 },
+  'image/gif':       { ext: 'gif',  format: 'GIF',  category: 'gifs',   maxBytes: 20 * 1024 * 1024 },
+  'image/png':       { ext: 'png',  format: 'PNG',  category: 'images', maxBytes: 10 * 1024 * 1024 },
+  'image/jpeg':      { ext: 'jpg',  format: 'JPEG', category: 'images', maxBytes: 10 * 1024 * 1024 },
+  'image/webp':      { ext: 'webp', format: 'WEBP', category: 'images', maxBytes: 10 * 1024 * 1024 },
+  'audio/mpeg':      { ext: 'mp3',  format: 'MP3',  category: 'sounds', maxBytes: 10 * 1024 * 1024 },
+  'audio/wav':       { ext: 'wav',  format: 'WAV',  category: 'sounds', maxBytes: 20 * 1024 * 1024 },
+  'audio/x-wav':     { ext: 'wav',  format: 'WAV',  category: 'sounds', maxBytes: 20 * 1024 * 1024 }, // alternate WAV MIME some browsers send
 }
 
 // ── Multer (memory storage — magic-byte check happens before any write) ──────
@@ -195,7 +209,7 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
         thumbnail_spaces_key: thumbKey,
         thumbnail_url: thumbnailUrl,
         filename,
-        format: allowed.ext.toUpperCase().replace('JPG', 'JPEG'),
+        format: allowed.format,
         category,
         mood_tags: moodTags,
         license,
@@ -209,8 +223,32 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
       .single()
 
     if (dbErr) {
-      console.error('[upload] Supabase insert error:', dbErr.message)
-      return res.status(500).json({ error: 'File uploaded to Spaces but metadata save failed. Contact support.' })
+      // Log the full error, not just .message. A CHECK violation puts the
+      // constraint name in .message but the offending value in .details, and
+      // without it this failure looks generic — which is how a format
+      // mismatch went unnoticed until users hit it.
+      console.error(
+        '[upload] Supabase insert error:',
+        dbErr.message,
+        dbErr.details ?? '',
+        dbErr.hint ?? '',
+        `(format=${allowed.format} category=${category})`,
+      )
+
+      // Both objects are already in Spaces by this point. Leaving them makes
+      // an orphan that no row references and nothing will ever clean up, so
+      // every failed upload used to leak two files and tell the user to
+      // contact support about it. Roll the storage write back instead.
+      await spaces
+        .send(new DeleteObjectsCommand({
+          Bucket: BUCKET,
+          Delete: { Objects: [{ Key: mainKey }, { Key: thumbKey }], Quiet: true },
+        }))
+        .catch((e) => console.error('[upload] orphan cleanup failed:', e.message))
+
+      return res.status(500).json({
+        error: 'Could not save the upload details. Nothing was stored — please try again.',
+      })
     }
 
     // Uploads are published immediately, so the new page must appear in the
