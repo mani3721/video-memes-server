@@ -15,6 +15,7 @@ import adminContentRouter from './routes/adminContent.js'
 import adminBlogRouter from './routes/adminBlog.js'
 import ttsRouter from './routes/textToSpeech.js'
 import sitemapRouter from './routes/sitemap.js'
+import redditFeedRouter from './routes/redditFeed.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
 
 const app = express()
@@ -105,6 +106,7 @@ app.use('/api/admin/content', adminContentRouter)
 app.use('/api/admin/blog', adminBlogRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api', ttsRouter)
+app.use('/api/reddit-feed', redditFeedRouter)
 
 // Sitemaps live at the root, not under /api, because crawlers fetch them from
 // the site origin (client/vercel.json rewrites /sitemap*.xml to this server).
