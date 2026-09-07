@@ -66,6 +66,16 @@ router.post('/approve/:memeId', async (req, res) => {
     paths: [...FEED_PATHS, feedPathForCategory(data.category)].filter(Boolean),
   })
 
+  // Notify users who have shown interest in this category. Fire-and-forget:
+  // an approval must not fail because the fan-out did, and the admin is not
+  // waiting on notification delivery. notify_new_content() is idempotent on
+  // (user_id, dedupe_key), so a re-approval cannot double-notify.
+  supabase
+    .rpc('notify_new_content', { p_meme_id: memeId })
+    .then(({ error: notifyErr }) => {
+      if (notifyErr) console.error('[admin/approve] notify_new_content:', notifyErr.message)
+    })
+
   res.json({ ok: true, meme: data })
 })
 

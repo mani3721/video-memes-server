@@ -6,6 +6,9 @@ import uploadRouter from './routes/upload.js'
 import trackDownloadRouter from './routes/trackDownload.js'
 import bulkDownloadRouter from './routes/bulkDownload.js'
 import favoritesRouter from './routes/favorites.js'
+import reactionsRouter from './routes/reactions.js'
+import notificationsRouter from './routes/notifications.js'
+import adminNotificationsRouter from './routes/adminNotifications.js'
 import adminRouter from './routes/admin.js'
 import adminContentRouter from './routes/adminContent.js'
 import adminBlogRouter from './routes/adminBlog.js'
@@ -64,16 +67,38 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 })
 
+// Reactions are open to guests (no account required), so this limiter is the
+// front line against spam rather than an afterthought. 30/min is generous for
+// a human tapping through a feed and cheap to absorb, while the DB's UNIQUE
+// (meme_id, reaction, actor_key) constraint means even traffic that stays
+// under the cap cannot inflate a count — it can only toggle its own reaction.
+//
+// Reads are exempt: GET /api/reactions/mine fires once per feed render to
+// restore which reactions this visitor already holds, and counting those
+// against the write budget would rate-limit ordinary browsing.
+const reactionLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'GET',
+  message: { error: 'Slow down a moment — too many reactions from this network.' },
+})
+
 app.use('/api/', apiLimiter)
 app.use('/api/upload', uploadLimiter)
+app.use('/api/reactions', reactionLimiter)
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/api/upload', uploadRouter)
 app.use('/api/track-download', trackDownloadRouter)
 app.use('/api/bulk-download', bulkDownloadRouter)
 app.use('/api/favorites', favoritesRouter)
+app.use('/api/reactions', reactionsRouter)
+app.use('/api/notifications', notificationsRouter)
 // More specific admin mounts first — adminRouter owns /api/admin/:action paths
 // like /approve/:id, so a bare /api/admin mount would shadow these.
+app.use('/api/admin/announcements', adminNotificationsRouter)
 app.use('/api/admin/content', adminContentRouter)
 app.use('/api/admin/blog', adminBlogRouter)
 app.use('/api/admin', adminRouter)

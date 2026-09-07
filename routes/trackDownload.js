@@ -34,6 +34,16 @@ router.post('/:memeId?', (req, res) => {
       // Optional analytics row (useful for country-level dashboards)
       const country = req.headers['cf-ipcountry'] ?? null
       await supabase.from('download_events').insert({ meme_id: memeId, country })
+
+      // Congratulate the uploader if this download crossed a threshold.
+      // Runs after the increment so it sees the new count. Deduped in SQL on
+      // (uploader, meme, threshold), so calling it on every single download is
+      // safe — it inserts at most once per threshold per meme, and returns 0
+      // for the overwhelming majority of calls.
+      const { error: milestoneErr } = await supabase.rpc('notify_download_milestone', {
+        p_meme_id: memeId,
+      })
+      if (milestoneErr) console.error('[track-download] milestone:', milestoneErr.message)
     } catch (err) {
       console.error('[track-download]', err.message)
     }

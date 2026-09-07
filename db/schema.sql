@@ -1,5 +1,17 @@
 -- Videsaur — Supabase schema
--- Run this in the Supabase SQL editor (Dashboard → SQL Editor → New query).
+--
+-- FRESH DATABASES ONLY. This file creates every table from scratch with bare
+-- CREATE TABLE, so running it against a database that already has these
+-- tables fails on the first one with:
+--   ERROR: 42P07: relation "<table>" already exists
+-- That error is harmless — it aborts before changing anything — but it means
+-- this is the wrong file for an existing database.
+--
+-- To change a live database, add a numbered file under db/migrations/ instead.
+-- Those are written to be idempotent (IF NOT EXISTS / CREATE OR REPLACE /
+-- DROP ... IF EXISTS) and safe to re-run. Edits to this file keep new
+-- deployments correct; they are never a way to patch an existing one.
+--
 -- Requires pg_trgm extension for full-text search.
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -108,21 +120,60 @@ ALTER TABLE public.download_events ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Service role only" ON public.download_events USING (FALSE);
 
 -- =========================================================
--- favorites  (cookie-session-based, no auth required)
+-- favorites  (account sync only — guests never reach this table)
 -- =========================================================
+-- Favorites work with no account at all: a guest's hearts live in
+-- localStorage under `videsaur_fav_ids` (client/src/hooks/useFavorites.js).
+-- This table exists purely for the one thing an account adds — carrying that
+-- list across devices — and client/src/lib/migrateFavorites.js upserts the
+-- guest's local list into it on sign-in so nothing is lost.
+--
+-- Corrected to match the deployed table. This block previously described a
+-- cookie-session shape, (session_id TEXT, asset_id TEXT), with a
+-- service-role-only policy. The client has always read and written favorites
+-- directly with the anon key on user_id / meme_id, so a database built from
+-- the old definition would reject every signed-in favorite twice over —
+-- unknown column, then RLS denial — and the sign-in-to-sync promise would
+-- silently fail on any fresh deployment.
+--
+-- server/routes/favorites.js still speaks the old cookie-session shape and is
+-- dead code against this table; the client does not call it.
 CREATE TABLE public.favorites (
   id         BIGSERIAL   PRIMARY KEY,
-  session_id TEXT        NOT NULL,
-  asset_id   TEXT        NOT NULL,
+  user_id    UUID        NOT NULL REFERENCES auth.users(id)  ON DELETE CASCADE,
+  meme_id    UUID        NOT NULL REFERENCES public.memes(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (session_id, asset_id)
+
+  -- Load-bearing for the merge: migrateFavorites upserts with
+  -- onConflict: 'user_id,meme_id', and Postgres rejects an ON CONFLICT clause
+  -- outright unless a matching unique constraint exists.
+  UNIQUE (user_id, meme_id)
 );
 
-CREATE INDEX favorites_session_idx ON public.favorites (session_id);
+CREATE INDEX favorites_user_idx ON public.favorites (user_id);
 
 ALTER TABLE public.favorites ENABLE ROW LEVEL SECURITY;
--- Only the service-role server can read/write favorites
-CREATE POLICY "Service role only" ON public.favorites USING (FALSE);
+
+-- Scoped to auth.uid() rather than service-role-only, because the client
+-- talks to this table directly with the anon key. A guest holds no JWT and so
+-- matches none of these policies — which is correct; their favorites are in
+-- localStorage, not here.
+CREATE POLICY "Users read own favorites"
+  ON public.favorites FOR SELECT
+  TO authenticated
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users add own favorites"
+  ON public.favorites FOR INSERT
+  TO authenticated
+  -- WITH CHECK is the important half: it stops a client inserting a row
+  -- attributed to somebody else's user_id.
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users remove own favorites"
+  ON public.favorites FOR DELETE
+  TO authenticated
+  USING (user_id = auth.uid());
 
 -- =========================================================
 -- profiles  (role management — admin | user)
