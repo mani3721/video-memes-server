@@ -8,6 +8,7 @@ import bulkDownloadRouter from './routes/bulkDownload.js'
 import favoritesRouter from './routes/favorites.js'
 import reactionsRouter from './routes/reactions.js'
 import notificationsRouter from './routes/notifications.js'
+import trendingRouter from './routes/trending.js'
 import adminNotificationsRouter from './routes/adminNotifications.js'
 import adminRouter from './routes/admin.js'
 import adminContentRouter from './routes/adminContent.js'
@@ -96,6 +97,7 @@ app.use('/api/bulk-download', bulkDownloadRouter)
 app.use('/api/favorites', favoritesRouter)
 app.use('/api/reactions', reactionsRouter)
 app.use('/api/notifications', notificationsRouter)
+app.use('/api/trending', trendingRouter)
 // More specific admin mounts first — adminRouter owns /api/admin/:action paths
 // like /approve/:id, so a bare /api/admin mount would shadow these.
 app.use('/api/admin/announcements', adminNotificationsRouter)
