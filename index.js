@@ -16,6 +16,7 @@ import adminBlogRouter from './routes/adminBlog.js'
 import ttsRouter from './routes/textToSpeech.js'
 import sitemapRouter from './routes/sitemap.js'
 import redditFeedRouter from './routes/redditFeed.js'
+import stickersRouter from './routes/stickers.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
 
 const app = express()
@@ -87,9 +88,24 @@ const reactionLimiter = rateLimit({
   message: { error: 'Slow down a moment — too many reactions from this network.' },
 })
 
+// KLIPY's test tier allows 100 upstream calls/hour, so the sticker proxy's
+// own cache and hourly budget (routes/stickers.js) are what actually protect
+// the quota. This limiter is the complementary per-IP guard: it stops one
+// client from burning the shared budget on unique search terms, which is the
+// only traffic shape the cache cannot absorb. 40/min still leaves ample room
+// for debounced typing.
+const stickerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sticker requests — give it a moment.' },
+})
+
 app.use('/api/', apiLimiter)
 app.use('/api/upload', uploadLimiter)
 app.use('/api/reactions', reactionLimiter)
+app.use('/api/stickers', stickerLimiter)
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/api/upload', uploadRouter)
@@ -107,6 +123,7 @@ app.use('/api/admin/blog', adminBlogRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api', ttsRouter)
 app.use('/api/reddit-feed', redditFeedRouter)
+app.use('/api/stickers', stickersRouter)
 
 // Sitemaps live at the root, not under /api, because crawlers fetch them from
 // the site origin (client/vercel.json rewrites /sitemap*.xml to this server).
