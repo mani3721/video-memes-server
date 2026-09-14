@@ -17,6 +17,7 @@ import ttsRouter from './routes/textToSpeech.js'
 import sitemapRouter from './routes/sitemap.js'
 import redditFeedRouter from './routes/redditFeed.js'
 import stickersRouter from './routes/stickers.js'
+import collectionsRouter from './routes/collections.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
 
 const app = express()
@@ -114,6 +115,7 @@ app.use('/api/bulk-download', bulkDownloadRouter)
 app.use('/api/favorites', favoritesRouter)
 app.use('/api/reactions', reactionsRouter)
 app.use('/api/notifications', notificationsRouter)
+app.use('/api/collections', collectionsRouter)
 app.use('/api/trending', trendingRouter)
 // More specific admin mounts first — adminRouter owns /api/admin/:action paths
 // like /approve/:id, so a bare /api/admin mount would shadow these.

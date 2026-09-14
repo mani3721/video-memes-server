@@ -198,13 +198,20 @@ CREATE POLICY "Service role only write"
   ON public.profiles FOR ALL
   USING (FALSE);
 
--- Auto-create a profile row with role='user' whenever a new auth user signs up
+-- Auto-create a profile row + default collection whenever a new user signs up
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   INSERT INTO public.profiles (id, email, role)
   VALUES (NEW.id, NEW.email, 'user')
   ON CONFLICT (id) DO NOTHING;
+
+  -- Seed the user's default "Uncategorized" collection so that the first
+  -- favorited item has somewhere to land without a round-trip to create it.
+  INSERT INTO public.collections (user_id, name, is_default)
+  VALUES (NEW.id, 'Uncategorized', TRUE)
+  ON CONFLICT DO NOTHING;
+
   RETURN NEW;
 END;
 $$;
@@ -212,6 +219,59 @@ $$;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- =========================================================
+-- collections  (named folders for organising favorites)
+-- =========================================================
+CREATE TABLE public.collections (
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name       TEXT        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 40),
+  emoji      TEXT,
+  is_default BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX collections_user_idx         ON public.collections (user_id);
+CREATE INDEX collections_user_default_idx ON public.collections (user_id, is_default);
+
+CREATE OR REPLACE FUNCTION update_collections_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+$$;
+
+CREATE TRIGGER collections_updated_at
+  BEFORE UPDATE ON public.collections
+  FOR EACH ROW EXECUTE FUNCTION update_collections_updated_at();
+
+ALTER TABLE public.collections ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users read own collections"   ON public.collections FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users create own collections" ON public.collections FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users update own collections" ON public.collections FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY "Users delete own collections" ON public.collections FOR DELETE USING (auth.uid() = user_id);
+
+-- =========================================================
+-- collection_items  (many-to-many: collections ↔ memes)
+-- =========================================================
+CREATE TABLE public.collection_items (
+  id            BIGSERIAL   PRIMARY KEY,
+  collection_id UUID        NOT NULL REFERENCES public.collections(id) ON DELETE CASCADE,
+  meme_id       UUID        NOT NULL REFERENCES public.memes(id)       ON DELETE CASCADE,
+  user_id       UUID        NOT NULL REFERENCES auth.users(id)         ON DELETE CASCADE,
+  added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (collection_id, meme_id)
+);
+
+CREATE INDEX collection_items_collection_idx ON public.collection_items (collection_id);
+CREATE INDEX collection_items_user_idx       ON public.collection_items (user_id);
+
+ALTER TABLE public.collection_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users read own collection items"   ON public.collection_items FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users add own collection items"    ON public.collection_items FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users remove own collection items" ON public.collection_items FOR DELETE USING (auth.uid() = user_id);
 
 -- =========================================================
 -- RLS update: uploaders can read their own pending memes
