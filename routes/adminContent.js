@@ -12,6 +12,7 @@
 
 import { Router } from 'express'
 import { DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { GoogleGenAI } from '@google/genai'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { supabase } from '../supabaseClient.js'
 import { spaces, BUCKET } from '../spacesClient.js'
@@ -181,6 +182,56 @@ router.patch('/:memeId', async (req, res) => {
   })
 
   res.json({ ok: true, item: { ...data, description_words: countWords(data.description_long) } })
+})
+
+// ── POST /api/admin/content/:memeId/generate ─────────────────────────────────
+router.post('/:memeId/generate', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on the server.' })
+  }
+
+  const { data: meme, error } = await supabase
+    .from('memes')
+    .select('title')
+    .eq('id', req.params.memeId)
+    .single()
+
+  if (error || !meme) return res.status(404).json({ error: 'Content not found.' })
+
+  const prompt = `Write a 400-word AdSense-friendly meme description for a video meme called "${meme.title}".
+
+Return ONLY clean HTML — no markdown, no code fences, no backticks. Use only these HTML tags: <h3>, <p>, <strong>.
+
+Structure:
+<h3>What Is This Meme</h3>
+<p>Origin and context, who is in it, what made it spread. 2–3 sentences.</p>
+
+<h3>Why People Use It</h3>
+<p>The emotion or reaction it conveys and the situations it fits. 2–3 sentences.</p>
+
+<h3>How to Use This Meme</h3>
+<p>Common use cases: WhatsApp status, Instagram Reels, YouTube Shorts, video editing. 2–3 sentences.</p>
+
+<h3>Format & Quality</h3>
+<p>Format, resolution and watermark-free quality. 1–2 sentences.</p>
+
+<h3>Related Memes</h3>
+<p>Thematic connections to similar memes. 1–2 sentences.</p>`
+
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+    const response = await ai.models.generateContent({
+      model: 'gemma-4-26b-a4b-it',
+      contents: prompt,
+    })
+    let html = response.text ?? ''
+    // Strip any markdown code fences Gemini might wrap the output in
+    html = html.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim()
+    res.json({ html })
+  } catch (err) {
+    console.error('[generate-description]', err.message)
+    res.status(500).json({ error: 'Gemini request failed: ' + err.message })
+  }
 })
 
 // ── DELETE /api/admin/content/:memeId ────────────────────────────────────────
