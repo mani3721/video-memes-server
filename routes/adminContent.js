@@ -185,6 +185,18 @@ router.patch('/:memeId', async (req, res) => {
 })
 
 // ── POST /api/admin/content/:memeId/generate ─────────────────────────────────
+const SITE_ORIGIN = (process.env.SITE_ORIGIN ?? 'https://www.videsaur.co.in').replace(/\/+$/, '')
+
+function toSlug(str) {
+  return String(str ?? '').toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+function memePageUrl(meme) {
+  const prefix = meme.category === 'sounds' ? '/sound' : '/meme'
+  const slug = toSlug(meme.title) || 'meme'
+  return `${SITE_ORIGIN}${prefix}/${slug}-${meme.id}`
+}
+
 router.post('/:memeId/generate', async (req, res) => {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on the server.' })
@@ -192,31 +204,52 @@ router.post('/:memeId/generate', async (req, res) => {
 
   const { data: meme, error } = await supabase
     .from('memes')
-    .select('title')
+    .select('id, title, category, format, mood_tags')
     .eq('id', req.params.memeId)
     .single()
 
   if (error || !meme) return res.status(404).json({ error: 'Content not found.' })
 
-  const prompt = `Write a 400-word AdSense-friendly meme description for a video meme called "${meme.title}".
+  const selfUrl    = memePageUrl(meme)
+  const categoryUrl = `${SITE_ORIGIN}/${meme.category ?? 'videos'}`
+  const trendingUrl = `${SITE_ORIGIN}/trending`
+  const moods = Array.isArray(meme.mood_tags) && meme.mood_tags.length
+    ? meme.mood_tags.join(', ')
+    : 'funny, relatable'
 
-Return ONLY clean HTML — no markdown, no code fences, no backticks. Use only these HTML tags: <h3>, <p>, <strong>.
+  const prompt = `You are an expert SEO content writer. Write a unique, engaging, Google AdSense-friendly meme description for the video meme titled: "${meme.title}".
 
-Structure:
+REQUIREMENTS:
+- Minimum 450 words, maximum 550 words
+- Unique content — never generic; every sentence must be specific to THIS meme
+- Optimised for Google search ranking: use the title naturally 3–4 times as a keyword phrase
+- Mood / tone: ${moods}
+- Format: ${meme.format ?? 'MP4 video'}
+- Category: ${meme.category ?? 'videos'}
+- Include EXACTLY 2 internal links using <a href="..."> tags:
+    1. Link text related to browsing more memes → href="${categoryUrl}"
+    2. Link text related to what's trending → href="${trendingUrl}"
+- Include EXACTLY 1 external backlink to a real, relevant, authoritative source (Wikipedia, Know Your Meme, YouTube, IMDb, or a news article) that contextualises this meme's origin or cultural reference. Use a real, correct URL.
+- DO NOT invent facts. If you are unsure of the real origin, write confidently about the cultural/emotional context instead.
+
+Return ONLY clean HTML — no markdown, no code fences, no backticks. Allowed tags: <h3>, <p>, <strong>, <em>, <a href="..." target="_blank" rel="noopener noreferrer">.
+
+Structure exactly:
+
 <h3>What Is This Meme</h3>
-<p>Origin and context, who is in it, what made it spread. 2–3 sentences.</p>
+<p>3–4 sentences. Explain the real origin, who is in the clip, what happens, and why it went viral. Mention the title "${meme.title}" naturally. Include the external backlink here where it adds context.</p>
 
 <h3>Why People Use It</h3>
-<p>The emotion or reaction it conveys and the situations it fits. 2–3 sentences.</p>
+<p>3–4 sentences. Describe the specific emotion — sarcasm, shock, joy, frustration — and the exact situations people drop this meme into: arguments, group chats, reactions to news, etc.</p>
 
 <h3>How to Use This Meme</h3>
-<p>Common use cases: WhatsApp status, Instagram Reels, YouTube Shorts, video editing. 2–3 sentences.</p>
+<p>3–4 sentences. Practical usage: WhatsApp status, Instagram Reels captions, YouTube Shorts overlays, video editing reaction cuts. Give concrete example scenarios.</p>
 
 <h3>Format & Quality</h3>
-<p>Format, resolution and watermark-free quality. 1–2 sentences.</p>
+<p>2–3 sentences. Describe the video format (${meme.format ?? 'MP4'}), resolution quality, that it is watermark-free and ready to download. Include the first internal link naturally here — e.g. "Browse more ${meme.category ?? 'video'} memes on <a href="${categoryUrl}" ...>Videsaur ${meme.category ?? 'videos'}</a>."</p>
 
-<h3>Related Memes</h3>
-<p>Thematic connections to similar memes. 1–2 sentences.</p>`
+<h3>Related Memes & Trending Content</h3>
+<p>3–4 sentences. Connect this meme thematically to similar viral trends and cultural moments. Include the second internal link — e.g. "Check out the latest <a href="${trendingUrl}" ...>trending memes</a> on Videsaur." End with a sentence encouraging the reader to download and share.</p>`
 
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
@@ -225,7 +258,7 @@ Structure:
       contents: prompt,
     })
     let html = response.text ?? ''
-    // Strip any markdown code fences Gemini might wrap the output in
+    // Strip any markdown code fences Gemini might accidentally wrap output in
     html = html.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim()
     res.json({ html })
   } catch (err) {
