@@ -13,6 +13,8 @@ import adminNotificationsRouter from './routes/adminNotifications.js'
 import adminRouter from './routes/admin.js'
 import adminContentRouter from './routes/adminContent.js'
 import adminBlogRouter from './routes/adminBlog.js'
+import adminFeaturesRouter from './routes/adminFeatures.js'
+import featuresRouter from './routes/features.js'
 import ttsRouter from './routes/textToSpeech.js'
 import sitemapRouter from './routes/sitemap.js'
 import redditFeedRouter from './routes/redditFeed.js'
@@ -122,7 +124,9 @@ app.use('/api/trending', trendingRouter)
 app.use('/api/admin/announcements', adminNotificationsRouter)
 app.use('/api/admin/content', adminContentRouter)
 app.use('/api/admin/blog', adminBlogRouter)
+app.use('/api/admin/features', adminFeaturesRouter)
 app.use('/api/admin', adminRouter)
+app.use('/api/features', featuresRouter)
 app.use('/api', ttsRouter)
 app.use('/api/reddit-feed', redditFeedRouter)
 app.use('/api/stickers', stickersRouter)
