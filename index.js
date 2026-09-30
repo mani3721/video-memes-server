@@ -16,6 +16,7 @@ import adminBlogRouter from './routes/adminBlog.js'
 import adminFeaturesRouter from './routes/adminFeatures.js'
 import featuresRouter from './routes/features.js'
 import ttsRouter from './routes/textToSpeech.js'
+import aiChatRouter from './routes/aiChat.js'
 import sitemapRouter from './routes/sitemap.js'
 import redditFeedRouter from './routes/redditFeed.js'
 import stickersRouter from './routes/stickers.js'
@@ -128,6 +129,7 @@ app.use('/api/admin/features', adminFeaturesRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/features', featuresRouter)
 app.use('/api', ttsRouter)
+app.use('/api/ai-chat', aiChatRouter)
 app.use('/api/reddit-feed', redditFeedRouter)
 app.use('/api/stickers', stickersRouter)
 

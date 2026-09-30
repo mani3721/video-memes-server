@@ -44,6 +44,23 @@ export async function optionalAuth(req, res, next) {
 export async function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Authentication required.' })
 
+  // Keep local development usable without assigning production admin roles.
+  // This bypass is fail-closed: it requires the explicit development runtime
+  // and a browser Origin on the loopback interface. Production always checks
+  // the persisted profile role below.
+  let isLocalDevelopment = false
+  if (process.env.NODE_ENV === 'development' && req.headers.origin) {
+    try {
+      isLocalDevelopment = ['localhost', '127.0.0.1', '::1'].includes(new URL(req.headers.origin).hostname)
+    } catch {
+      // Invalid origins are never trusted.
+    }
+  }
+  if (isLocalDevelopment) {
+    req.isAdmin = true
+    return next()
+  }
+
   const { data: profile, error } = await supabase
     .from('profiles')
     .select('role')

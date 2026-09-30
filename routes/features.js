@@ -1,6 +1,6 @@
 /**
  * Public read-only feature flags.
- * GET /api/features  — no auth required; returns { feed_tab, stickers_tab, amazon_affiliate }
+ * GET /api/features  — no auth required; returns { feed_tab, stickers_tab, amazon_affiliate, ai_chat_tab }
  */
 import { Router } from 'express'
 import { supabase } from '../supabaseClient.js'
@@ -21,6 +21,7 @@ router.get('/', async (_req, res) => {
     feed_tab:         flags.feed_tab         ?? true,
     stickers_tab:     flags.stickers_tab     ?? true,
     amazon_affiliate: flags.amazon_affiliate ?? true,
+    ai_chat_tab:      flags.ai_chat_tab      ?? true,
   }
 
   res.json(result)

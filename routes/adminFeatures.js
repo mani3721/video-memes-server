@@ -8,7 +8,7 @@ import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { supabase } from '../supabaseClient.js'
 
-const VALID_KEYS = new Set(['feed_tab', 'stickers_tab', 'amazon_affiliate'])
+const VALID_KEYS = new Set(['feed_tab', 'stickers_tab', 'amazon_affiliate', 'ai_chat_tab'])
 
 const router = Router()
 router.use(requireAuth, requireAdmin)
