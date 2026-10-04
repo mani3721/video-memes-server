@@ -90,6 +90,58 @@ router.post('/', async (req, res) => {
   res.status(201).json({ announcement: data })
 })
 
+// ── PATCH /api/admin/announcements/:id ───────────────────────────────────────
+router.patch('/:id', async (req, res) => {
+  const { title, message, link, thumbnail, segmentLanguage } = req.body ?? {}
+
+  if (typeof title !== 'string' || title.trim().length === 0) {
+    return res.status(400).json({ error: 'Title is required.' })
+  }
+  if (title.trim().length > MAX_TITLE) {
+    return res.status(400).json({ error: `Title must be ${MAX_TITLE} characters or fewer.` })
+  }
+  if (message != null && typeof message !== 'string') {
+    return res.status(400).json({ error: 'Message must be text.' })
+  }
+  if (typeof message === 'string' && message.length > MAX_MESSAGE) {
+    return res.status(400).json({ error: `Message must be ${MAX_MESSAGE} characters or fewer.` })
+  }
+
+  const linkResult = normaliseLink(link)
+  if (!linkResult.ok) {
+    return res.status(400).json({ error: 'Link must be a site-relative path starting with "/".' })
+  }
+
+  const thumbResult = normaliseThumbnail(thumbnail)
+  if (!thumbResult.ok) {
+    return res.status(400).json({ error: 'Thumbnail must be an https:// URL or a site-relative path.' })
+  }
+
+  const { data, error } = await supabase
+    .from('notifications')
+    .update({
+      title: title.trim(),
+      message: typeof message === 'string' && message.trim() ? message.trim() : null,
+      link: linkResult.value,
+      thumbnail: thumbResult.value,
+      segment_language:
+        typeof segmentLanguage === 'string' && segmentLanguage.trim() ? segmentLanguage.trim() : null,
+    })
+    .eq('id', req.params.id)
+    .is('user_id', null)
+    .eq('type', 'announcement')
+    .select('id, title, message, link, thumbnail, segment_language, created_at')
+    .maybeSingle()
+
+  if (error) {
+    console.error('[admin/announcements:update]', error.message)
+    return res.status(500).json({ error: 'Could not update announcement.' })
+  }
+  if (!data) return res.status(404).json({ error: 'Announcement not found.' })
+
+  res.json({ announcement: data })
+})
+
 // ── GET /api/admin/announcements ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
