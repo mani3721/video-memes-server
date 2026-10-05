@@ -222,7 +222,6 @@ full sitemap against a database with 003 unapplied — all seven files return 20
 | `SITEMAP_TRENDING_DOWNLOADS` | `500` | `download_count` that counts as trending. |
 | `SITEMAP_POLICY_LASTMOD` | `2026-09-01` | `lastmod` for hand-written copy pages. |
 | `SITEMAP_WARM` | *(on)* | Set `false` to disable the warmer (useful locally). |
-| `INDEXNOW_KEY` | *(unset)* | 8–128 hex chars. Unset = IndexNow no-ops. |
 | `TRUST_PROXY` | `1` | Proxy hops to trust for client IPs. |
 
 ## Search engine submission
@@ -242,14 +241,15 @@ Bing Webmaster Tools → *Sitemaps* → submit the same index URL. After that,
 IndexNow handles per-URL notification.
 
 ### IndexNow — automatic
-Covers Bing and Yandex. To enable:
+Covers Bing and Yandex. Production is configured with the public verification
+key in `client/public/a56cc98ef24342baa0f503291145a129.txt`. Confirm that
+`https://www.videsaur.co.in/a56cc98ef24342baa0f503291145a129.txt` returns HTTP
+200 and only the key text after every deployment. The submission code uses that
+exact URL as `keyLocation` and `www.videsaur.co.in` as the host.
 
-1. Generate a key: `openssl rand -hex 16`
-2. Set `INDEXNOW_KEY` on the API service.
-3. Confirm `https://videsaur.co.in/indexnow.txt` returns the key — IndexNow
-   verifies host ownership by reading it, which is why the Vercel rewrite for
-   that path exists. The key is public by design; it proves control of the host
-   and is not a secret.
+The key is public by design; it proves control of the host and is not a secret.
+If it is rotated, update both the static filename/content and `KEY` in
+`server/lib/sitemap/indexnow.js` in the same deployment.
 
 Every publish, retitle and takedown then submits the affected URLs
 automatically. A rename submits both the old and new URL, so the outgoing slug

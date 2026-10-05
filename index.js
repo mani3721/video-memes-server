@@ -22,6 +22,7 @@ import redditFeedRouter from './routes/redditFeed.js'
 import stickersRouter from './routes/stickers.js'
 import collectionsRouter from './routes/collections.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
+import { climateThemeFor, locationCodesFromHeaders } from './lib/climateTheme.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -138,6 +139,15 @@ app.use('/api/stickers', stickersRouter)
 // Mounted after the /api routers so it cannot shadow them, and outside the
 // apiLimiter — it carries its own, crawler-friendly rate limit.
 app.use('/', sitemapRouter)
+
+// ── Coarse regional theme ─────────────────────────────────────────────────────
+// Vercel supplies country/region codes at the edge. Return only a broad theme:
+// no IP, coordinates, or location identifiers are stored or exposed to clients.
+app.get('/api/location-theme', (req, res) => {
+  const { country, region } = locationCodesFromHeaders(req.headers)
+  res.set('Cache-Control', 'private, max-age=3600')
+  res.json({ theme: climateThemeFor(country, region) })
+})
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
