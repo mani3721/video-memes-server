@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS feature_flags (
 
 -- Seed the three initial flags (no-op if they already exist).
 INSERT INTO feature_flags (key, enabled) VALUES
-  ('feed_tab',         true),
-  ('stickers_tab',     true),
-  ('amazon_affiliate', true)
+  ('feed_tab',     true),
+  ('stickers_tab', true)
 ON CONFLICT (key) DO NOTHING;
