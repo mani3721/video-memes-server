@@ -1,10 +1,9 @@
 import { Router } from 'express'
-import { requireAuth, requireAdmin } from '../middleware/auth.js'
 
 const router = Router()
 
-// Admin-only — gate every request before touching the cache or Reddit.
-router.use(requireAuth, requireAdmin)
+// Public feed: subreddit names are restricted to ALLOWED_SUBS below, while the
+// shared API rate limiter and short-lived cache protect the upstream service.
 
 // Reddit RSS works without OAuth and is not rate-limited like the JSON API.
 // "new" sort returns genuinely fresh posts on every fetch.
