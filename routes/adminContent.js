@@ -26,7 +26,7 @@ import {
   countWords,
   parseContentPatch,
 } from '../lib/contentSchema.js'
-import { entryNameFor, uniqueEntryName } from '../lib/zipEntries.js'
+import { entryNameFor, folderFor, uniqueEntryName } from '../lib/zipEntries.js'
 
 const router = Router()
 router.use(requireAuth, requireAdmin)
@@ -173,7 +173,7 @@ function appendAndWait(archive, stream, name) {
 
 router.post('/download', async (req, res) => {
   const body = req.body ?? {}
-  let query = supabase.from('memes').select('id, title, spaces_key, filename', { count: 'exact' })
+  let query = supabase.from('memes').select('id, title, spaces_key, filename, format, category', { count: 'exact' })
 
   if (body.all === true) {
     query = applyListFilters(query, body.filters ?? {})
@@ -234,7 +234,9 @@ router.post('/download', async (req, res) => {
     try {
       const { Body } = await spaces.send(new GetObjectCommand({ Bucket: BUCKET, Key: meme.spaces_key }))
       const stream = typeof Body?.pipe === 'function' ? Body : Readable.fromWeb(Body)
-      await appendAndWait(archive, stream, uniqueEntryName(entryNameFor(meme), used))
+      // gifs/, images/, sounds/, videos/ — de-duplicated per folder, since `used` holds full paths.
+      const entryPath = uniqueEntryName(`${folderFor(meme)}/${entryNameFor(meme)}`, used)
+      await appendAndWait(archive, stream, entryPath)
     } catch (err) {
       console.error(`[admin/content] download skip ${meme.spaces_key}:`, err.message)
       failed.push(`${meme.id}\t${meme.title ?? ''}\t${err.message}`)
