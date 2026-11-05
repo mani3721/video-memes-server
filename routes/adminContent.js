@@ -5,13 +5,16 @@
  * GET    /:memeId     — one asset with every editable field
  * PATCH  /:memeId     — edit title, descriptions, category, tags, status
  * POST   /bulk        — apply a status or triage flag to many assets at once
+ * POST   /download    — stream a ZIP of selected (or all matching) assets
  *
  * Unlike /api/admin/pending, this lists assets in *every* state — the point is
  * to backfill descriptions across published content, not to moderate a queue.
  */
 
+import { Readable } from 'node:stream'
 import { Router } from 'express'
-import { DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import archiver from 'archiver'
+import { DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { GoogleGenAI } from '@google/genai'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { supabase } from '../supabaseClient.js'
@@ -23,6 +26,7 @@ import {
   countWords,
   parseContentPatch,
 } from '../lib/contentSchema.js'
+import { entryNameFor, uniqueEntryName } from '../lib/zipEntries.js'
 
 const router = Router()
 router.use(requireAuth, requireAdmin)
@@ -39,24 +43,29 @@ function escapeLike(term) {
   return term.replace(/[\\%_,()]/g, (c) => `\\${c}`)
 }
 
+/**
+ * Applies the table's filter set to a query. Shared by the list endpoint and
+ * the "download all matching" ZIP so both always agree on what "all" means.
+ */
+function applyListFilters(query, { q, category, status, needsDescription, missingDescription, from, to } = {}) {
+  if (typeof q === 'string' && q.trim()) query = query.ilike('title', `%${escapeLike(q.trim())}%`)
+  if (category && CATEGORIES.includes(category)) query = query.eq('category', category)
+  if (status && CONTENT_STATUSES.includes(status)) query = query.eq('content_status', status)
+  if (String(needsDescription) === 'true') query = query.eq('needs_description', true)
+  // Distinct from the triage flag: "no long description written yet" is a fact
+  // about the data, whereas needs_description is an admin's judgement call.
+  if (String(missingDescription) === 'true') query = query.is('description_long', null)
+  if (from) query = query.gte('created_at', from)
+  if (to) query = query.lte('created_at', to)
+  return query
+}
+
 // ── GET /api/admin/content ───────────────────────────────────────────────────
 router.get('/', async (req, res) => {
-  const { q, category, status, needsDescription, missingDescription, from, to } = req.query
-
   const page = Math.max(1, Number.parseInt(req.query.page ?? '1', 10) || 1)
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.pageSize ?? '25', 10) || 25))
 
-  let query = supabase.from('memes').select(LIST_COLUMNS, { count: 'exact' })
-
-  if (q?.trim()) query = query.ilike('title', `%${escapeLike(q.trim())}%`)
-  if (category && CATEGORIES.includes(category)) query = query.eq('category', category)
-  if (status && CONTENT_STATUSES.includes(status)) query = query.eq('content_status', status)
-  if (needsDescription === 'true') query = query.eq('needs_description', true)
-  // Distinct from the triage flag: "no long description written yet" is a fact
-  // about the data, whereas needs_description is an admin's judgement call.
-  if (missingDescription === 'true') query = query.is('description_long', null)
-  if (from) query = query.gte('created_at', from)
-  if (to) query = query.lte('created_at', to)
+  const query = applyListFilters(supabase.from('memes').select(LIST_COLUMNS, { count: 'exact' }), req.query)
 
   const offset = (page - 1) * pageSize
   const { data, count, error } = await query
@@ -129,6 +138,119 @@ router.post('/bulk', async (req, res) => {
   }
 
   res.json({ ok: true, updated: data?.length ?? 0, items: data ?? [] })
+})
+
+// ── POST /api/admin/content/download ─────────────────────────────────────────
+/**
+ * Streams a ZIP of the original files for admin bulk download.
+ * Declared before /:memeId for the same reason as /bulk.
+ *
+ * Body is one of:
+ *   { ids: string[] }          — explicit selection
+ *   { all: true, filters: {} } — every asset matching the table's filters
+ *
+ * Unlike the public /api/bulk-download this includes unpublished assets and
+ * has a higher cap. Files are fetched from Spaces one at a time (the next
+ * GetObject only starts once the previous entry is written), so a large
+ * archive never holds hundreds of open upstream sockets.
+ */
+const MAX_ZIP_ITEMS = 500
+
+/** Appends one stream and resolves once archiver has fully written that entry. */
+function appendAndWait(archive, stream, name) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      archive.off('entry', onEntry)
+      stream.off('error', onError)
+    }
+    const onEntry = () => { cleanup(); resolve() }
+    const onError = (err) => { cleanup(); reject(err) }
+    archive.on('entry', onEntry)
+    stream.on('error', onError)
+    archive.append(stream, { name })
+  })
+}
+
+router.post('/download', async (req, res) => {
+  const body = req.body ?? {}
+  let query = supabase.from('memes').select('id, title, spaces_key, filename', { count: 'exact' })
+
+  if (body.all === true) {
+    query = applyListFilters(query, body.filters ?? {})
+  } else {
+    const ids = Array.isArray(body.ids) ? body.ids.filter((id) => typeof id === 'string' && id.trim()) : []
+    if (!ids.length) return res.status(400).json({ error: 'Supply ids (non-empty array) or all: true.' })
+    if (ids.length > MAX_ZIP_ITEMS) {
+      return res.status(400).json({ error: `A ZIP download is limited to ${MAX_ZIP_ITEMS} items.` })
+    }
+    query = query.in('id', ids)
+  }
+
+  // range is inclusive, so this fetches one row past the cap — an oversized
+  // "all" request is rejected up front rather than silently truncated.
+  const { data: memes, count, error } = await query
+    .order('created_at', { ascending: false })
+    .range(0, MAX_ZIP_ITEMS)
+
+  if (error) {
+    console.error('[admin/content] download lookup failed:', error.message)
+    return res.status(500).json({ error: 'Failed to look up files.' })
+  }
+  const total = count ?? memes?.length ?? 0
+  if (total > MAX_ZIP_ITEMS) {
+    return res.status(400).json({
+      error: `${total} items match — a ZIP download is limited to ${MAX_ZIP_ITEMS}. Narrow the filters and try again.`,
+    })
+  }
+
+  const downloadable = (memes ?? []).filter((m) => m.spaces_key)
+  if (!downloadable.length) return res.status(404).json({ error: 'No downloadable files found.' })
+
+  const stamp = new Date().toISOString().slice(0, 10)
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', `attachment; filename="videsaur-admin-${stamp}.zip"`)
+
+  // Media is already compressed; deflate would burn CPU for ~0% gain.
+  const archive = archiver('zip', { store: true })
+  let aborted = false
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      aborted = true
+      archive.abort()
+    }
+  })
+  archive.on('warning', (err) => console.warn('[admin/content] archiver warning:', err.message))
+  archive.on('error', (err) => {
+    console.error('[admin/content] archiver error:', err.message)
+    res.destroy(err)
+  })
+  archive.pipe(res)
+
+  const used = new Set()
+  const failed = []
+
+  for (const meme of downloadable) {
+    if (aborted) return
+    try {
+      const { Body } = await spaces.send(new GetObjectCommand({ Bucket: BUCKET, Key: meme.spaces_key }))
+      const stream = typeof Body?.pipe === 'function' ? Body : Readable.fromWeb(Body)
+      await appendAndWait(archive, stream, uniqueEntryName(entryNameFor(meme), used))
+    } catch (err) {
+      console.error(`[admin/content] download skip ${meme.spaces_key}:`, err.message)
+      failed.push(`${meme.id}\t${meme.title ?? ''}\t${err.message}`)
+    }
+  }
+
+  if (aborted) return
+
+  // Tell the admin which files are missing instead of silently shipping a short archive.
+  if (failed.length) {
+    archive.append(`Files that could not be fetched (${failed.length}):\n\n${failed.join('\n')}\n`, {
+      name: uniqueEntryName('_failed.txt', used),
+    })
+  }
+
+  archive.finalize()
 })
 
 // ── GET /api/admin/content/:memeId ───────────────────────────────────────────
