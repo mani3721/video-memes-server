@@ -16,7 +16,7 @@ import { Router } from 'express'
 import archiver from 'archiver'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { spaces, BUCKET } from '../spacesClient.js'
-import { supabase } from '../supabaseClient.js'
+import { listRows, Query } from '../db/appwrite.js'
 
 const router = Router()
 const MAX_ITEMS = 50
@@ -34,15 +34,17 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Each memeId must be a non-empty string.' })
   }
 
-  // 1 — Resolve meme IDs → Spaces keys via Supabase (service role bypasses RLS)
-  const { data: memes, error: dbErr } = await supabase
-    .from('memes')
-    .select('id, spaces_key, filename, title')
-    .in('id', memeIds)
-    .eq('is_published', true)
-
-  if (dbErr) {
-    console.error('[bulk-download] Supabase error:', dbErr.message)
+  // 1 — Resolve meme IDs → Spaces keys via Appwrite (API key bypasses row permissions)
+  let memes
+  try {
+    ;({ rows: memes } = await listRows('memes', [
+      Query.equal('$id', memeIds),
+      Query.equal('is_published', true),
+      Query.select(['$id', 'spaces_key', 'filename', 'title']),
+      Query.limit(memeIds.length),
+    ]))
+  } catch (err) {
+    console.error('[bulk-download] Appwrite error:', err.message)
     return res.status(500).json({ error: 'Failed to look up files. Please try again.' })
   }
   if (!memes?.length) {

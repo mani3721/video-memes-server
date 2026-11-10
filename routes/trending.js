@@ -16,7 +16,7 @@
  */
 
 import { Router } from 'express'
-import { supabase } from '../db/supabaseClient.js'
+import { listAllRows, listRows, Query } from '../db/appwrite.js'
 
 const router = Router()
 
@@ -52,16 +52,19 @@ function windowStart() {
 const EVENT_SCAN_CAP = 100_000
 
 async function countTodayDownloads(since) {
-  const { data, error } = await supabase
-    .from('download_events')
-    .select('meme_id')
-    .gte('created_at', since.toISOString())
-    .limit(EVENT_SCAN_CAP)
-
-  if (error) throw new Error(`download_events read failed: ${error.message}`)
+  let data
+  try {
+    data = await listAllRows(
+      'download_events',
+      [Query.greaterThanEqual('created_at', since.toISOString()), Query.select(['$id', 'meme_id'])],
+      { cap: EVENT_SCAN_CAP },
+    )
+  } catch (err) {
+    throw new Error(`download_events read failed: ${err.message}`)
+  }
 
   const counts = new Map()
-  for (const { meme_id } of data ?? []) {
+  for (const { meme_id } of data) {
     if (meme_id) counts.set(meme_id, (counts.get(meme_id) ?? 0) + 1)
   }
   return counts
@@ -79,13 +82,17 @@ async function buildPayload({ limit, excludeCategory }) {
     .map(([id]) => id)
 
   if (candidateIds.length >= MIN_TODAY_MEMES) {
-    let q = supabase.from('memes').select('*').in('id', candidateIds).eq('is_published', true)
-    if (excludeCategory) q = q.neq('category', excludeCategory)
+    const q = [Query.equal('$id', candidateIds), Query.equal('is_published', true), Query.limit(candidateIds.length)]
+    if (excludeCategory) q.push(Query.notEqual('category', excludeCategory))
 
-    const { data, error } = await q
-    if (error) throw new Error(`memes read failed: ${error.message}`)
+    let data
+    try {
+      ;({ rows: data } = await listRows('memes', q))
+    } catch (err) {
+      throw new Error(`memes read failed: ${err.message}`)
+    }
 
-    const ranked = (data ?? [])
+    const ranked = data
       .map((m) => ({ ...m, today_downloads: counts.get(m.id) ?? 0 }))
       .sort((a, b) => b.today_downloads - a.today_downloads)
       .slice(0, limit)
@@ -102,19 +109,18 @@ async function buildPayload({ limit, excludeCategory }) {
 
   // Too early in the day (or a quiet category) — show the all-time ranking and
   // say so, rather than presenting a two-item list as "today's top 10".
-  let fq = supabase
-    .from('memes')
-    .select('*')
-    .eq('is_published', true)
-    .order('download_count', { ascending: false })
-    .limit(limit)
-  if (excludeCategory) fq = fq.neq('category', excludeCategory)
+  const fq = [Query.equal('is_published', true), Query.orderDesc('download_count'), Query.limit(limit)]
+  if (excludeCategory) fq.push(Query.notEqual('category', excludeCategory))
 
-  const { data: fallback, error: fErr } = await fq
-  if (fErr) throw new Error(`fallback read failed: ${fErr.message}`)
+  let fallback
+  try {
+    ;({ rows: fallback } = await listRows('memes', fq))
+  } catch (err) {
+    throw new Error(`fallback read failed: ${err.message}`)
+  }
 
   return {
-    memes: fallback ?? [],
+    memes: fallback,
     isFallback: true,
     windowStart: since.toISOString(),
     generatedAt: new Date().toISOString(),

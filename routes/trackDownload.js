@@ -2,49 +2,69 @@
  * POST /api/track-download       (body: { memeId })
  * POST /api/track-download/:memeId  (URL param — both forms supported)
  *
- * Fire-and-forget download counter.  Responds immediately with 202 and
- * writes to Supabase in the background — never blocks the user's download.
- *
- * SQL for the RPC used here:
- *
- *   create or replace function increment_download_count(meme_id uuid)
- *   returns void as $$
- *     update memes set download_count = download_count + 1 where id = meme_id;
- *   $$ language sql;
+ * Fire-and-forget download counter. Responds immediately with 202 and writes
+ * to Appwrite in the background — never blocks the user's download.
  */
 
 import { Router } from 'express'
-import { supabase } from '../supabaseClient.js'
+import { createRow, incrementColumn, AppwriteException } from '../db/appwrite.js'
 
 const router = Router()
 
-router.post('/:memeId?', (req, res) => {
-  // Support both URL param and request body
-  const memeId = req.params.memeId ?? req.body?.memeId
-  if (!memeId) return res.status(400).json({ error: 'memeId required.' })
+/** Same thresholds as the old notify_download_milestone SQL function. */
+const MILESTONES = [100, 500, 1000, 5000, 10000, 50000, 100000]
 
-  // Respond immediately — the user's download must not wait on this
+/**
+ * Notify the uploader once per threshold. The notification row ID is derived
+ * from (meme, threshold), so a second attempt hits a 409 instead of creating a
+ * duplicate — the same guarantee the SQL ON CONFLICT DO NOTHING gave.
+ */
+async function notifyMilestone(meme) {
+  if (!meme?.uploader_id) return
+  // Only fire on the exact download that crosses a threshold.
+  const threshold = MILESTONES.find((t) => meme.download_count === t)
+  if (!threshold) return
+
+  try {
+    await createRow(
+      'notifications',
+      {
+        user_id: meme.uploader_id,
+        type: 'milestone',
+        title: `Your upload reached ${threshold} downloads!`,
+        message: meme.title ?? null,
+        link: `${meme.category === 'sounds' ? '/sound/' : '/meme/'}${meme.id}`,
+        thumbnail: meme.thumbnail_url ?? null,
+        dedupe_key: `milestone:${meme.id}:${threshold}`,
+        created_at: new Date().toISOString(),
+      },
+      `ms${threshold}-${meme.id}`.slice(0, 36),
+    )
+  } catch (err) {
+    if (!(err instanceof AppwriteException && err.code === 409)) throw err
+  }
+}
+
+router.post('/:memeId?', (req, res) => {
+  const memeId = req.params.memeId ?? req.body?.memeId
+  if (!memeId || typeof memeId !== 'string') return res.status(400).json({ error: 'memeId required.' })
+
   res.status(202).json({ success: true })
 
-  // Async write — errors are logged only, never thrown
   ;(async () => {
     try {
-      await supabase.rpc('increment_download_count', { meme_id: memeId })
+      const meme = await incrementColumn('memes', memeId, 'download_count')
 
-      // Optional analytics row (useful for country-level dashboards)
-      const country = req.headers['cf-ipcountry'] ?? null
-      await supabase.from('download_events').insert({ meme_id: memeId, country })
-
-      // Congratulate the uploader if this download crossed a threshold.
-      // Runs after the increment so it sees the new count. Deduped in SQL on
-      // (uploader, meme, threshold), so calling it on every single download is
-      // safe — it inserts at most once per threshold per meme, and returns 0
-      // for the overwhelming majority of calls.
-      const { error: milestoneErr } = await supabase.rpc('notify_download_milestone', {
-        p_meme_id: memeId,
+      const country = req.headers['cf-ipcountry'] ?? req.headers['x-vercel-ip-country'] ?? null
+      await createRow('download_events', {
+        meme_id: memeId,
+        country: country ? String(country).slice(0, 8) : null,
+        created_at: new Date().toISOString(),
       })
-      if (milestoneErr) console.error('[track-download] milestone:', milestoneErr.message)
+
+      await notifyMilestone(meme)
     } catch (err) {
+      if (err instanceof AppwriteException && err.code === 404) return // unknown meme
       console.error('[track-download]', err.message)
     }
   })()

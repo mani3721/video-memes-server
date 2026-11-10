@@ -3,18 +3,20 @@
  * GET /api/features  — no auth required; returns public feature flags.
  */
 import { Router } from 'express'
-import { supabase } from '../supabaseClient.js'
+import { listRows, Query } from '../db/appwrite.js'
 
 const router = Router()
 
 router.get('/', async (_req, res) => {
-  const { data, error } = await supabase
-    .from('feature_flags')
-    .select('key, enabled')
+  let data
+  try {
+    ;({ rows: data } = await listRows('feature_flags', [Query.select(['$id', 'key', 'enabled']), Query.limit(100)]))
+  } catch (err) {
+    console.error('[features]', err.message)
+    return res.status(500).json({ error: 'Could not load features.' })
+  }
 
-  if (error) return res.status(500).json({ error: error.message })
-
-  const flags = Object.fromEntries((data ?? []).map(({ key, enabled }) => [key, enabled]))
+  const flags = Object.fromEntries(data.map(({ key, enabled }) => [key, enabled]))
 
   // Ensure defaults are present even if DB rows are missing.
   const result = {
