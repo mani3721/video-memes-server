@@ -33,6 +33,21 @@ export function tablesDB() {
   return db
 }
 
+/**
+ * Safe diagnostic for /health: which env vars are missing and whether a real
+ * Appwrite read works. Never returns values, only names and error codes.
+ */
+export async function appwriteStatus() {
+  const missing = REQUIRED.filter((k) => !process.env[k]?.trim())
+  if (missing.length) return { ok: false, missing }
+  try {
+    const ids = await tablesDB().listTables({ databaseId: databaseId(), queries: [Query.limit(100)] })
+    return { ok: true, tables: ids.tables.length }
+  } catch (err) {
+    return { ok: false, code: err.code ?? null, type: err.type ?? err.name, message: err.message }
+  }
+}
+
 export function databaseId() {
   return process.env.APPWRITE_DATABASE_ID
 }
