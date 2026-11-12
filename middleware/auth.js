@@ -1,53 +1,45 @@
 /**
- * Auth middleware for the Videsaur server.
+ * Auth middleware for the Videsaur server (Appwrite Auth).
  *
- * requireAuth  — verifies the Supabase JWT and attaches req.user
+ * The browser sends `Authorization: Bearer <Appwrite JWT>` (account.createJWT()).
+ *
+ * requireAuth  — verifies the JWT and attaches req.user = { id, email, name }
+ * optionalAuth — same, but never rejects
  * requireAdmin — additionally checks profiles.role === 'admin'
- * optionalAuth — same as requireAuth but doesn't reject on missing token
  */
 
-import { supabase } from '../supabaseClient.js'
+import { userFromJwt, getRow } from '../db/appwrite.js'
 
-/**
- * Extract and verify the Bearer token from the Authorization header.
- * On success, attaches req.user (Supabase User object).
- */
-export async function requireAuth(req, res, next) {
+async function resolveUser(req) {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
-  if (!token) return res.status(401).json({ error: 'Authentication required.' })
+  if (!token) return null
+  try {
+    const u = await userFromJwt(token)
+    return { id: u.$id, email: u.email, name: u.name }
+  } catch {
+    return null
+  }
+}
 
-  const { data: { user }, error } = await supabase.auth.getUser(token)
-  if (error || !user) return res.status(401).json({ error: 'Invalid or expired session.' })
-
+export async function requireAuth(req, res, next) {
+  if (!req.headers.authorization) return res.status(401).json({ error: 'Authentication required.' })
+  const user = await resolveUser(req)
+  if (!user) return res.status(401).json({ error: 'Invalid or expired session.' })
   req.user = user
   next()
 }
 
-/**
- * Like requireAuth but resolves with req.user = null instead of rejecting
- * when no token is present. Useful for upload (anon uploads are blocked at
- * the route level, but we still want to know who the uploader is).
- */
-export async function optionalAuth(req, res, next) {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
-  if (!token) return next()
-
-  const { data: { user } } = await supabase.auth.getUser(token)
-  req.user = user ?? null
+export async function optionalAuth(req, _res, next) {
+  req.user = await resolveUser(req)
   next()
 }
 
-/**
- * Must be used AFTER requireAuth.
- * Looks up the profiles table to confirm the user has role = 'admin'.
- */
+/** Must be used AFTER requireAuth. */
 export async function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Authentication required.' })
 
-  // Keep local development usable without assigning production admin roles.
-  // This bypass is fail-closed: it requires the explicit development runtime
-  // and a browser Origin on the loopback interface. Production always checks
-  // the persisted profile role below.
+  // Local development bypass: fail-closed, requires development runtime and a
+  // loopback browser Origin. Production always checks the profile role.
   let isLocalDevelopment = false
   if (process.env.NODE_ENV === 'development' && req.headers.origin) {
     try {
@@ -61,13 +53,11 @@ export async function requireAdmin(req, res, next) {
     return next()
   }
 
-  const { data: profile, error } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', req.user.id)
-    .single()
-
-  if (error || profile?.role !== 'admin') {
+  try {
+    const profile = await getRow('profiles', req.user.id)
+    if (profile?.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' })
+  } catch (err) {
+    console.error('[auth/requireAdmin]', err.message)
     return res.status(403).json({ error: 'Admin access required.' })
   }
 

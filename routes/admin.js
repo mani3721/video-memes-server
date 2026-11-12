@@ -1,9 +1,9 @@
 /**
- * Admin-only routes — all require a valid JWT with role = 'admin'.
+ * Admin-only routes — all require a valid Appwrite JWT with role = 'admin'.
  *
  * GET  /api/admin/pending          — list memes awaiting approval
  * POST /api/admin/approve/:memeId  — publish a meme
- * DELETE /api/admin/reject/:memeId — remove a meme (Spaces + Supabase)
+ * DELETE /api/admin/reject/:memeId — remove a meme (Spaces + Appwrite)
  * PATCH /api/admin/rename/:memeId  — retitle a meme
  * GET  /api/admin/sitemap/status   — sitemap cache state
  * POST /api/admin/sitemap/refresh  — purge the sitemap cache by hand
@@ -15,7 +15,8 @@
 import { Router } from 'express'
 import { DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../supabaseClient.js'
+import { Query, getRow, updateRow, deleteRow, listAllRows } from '../db/appwrite.js'
+import { notifyNewContent } from '../lib/notifyNewContent.js'
 import { spaces, BUCKET } from '../spacesClient.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import { stats as sitemapStats } from '../lib/sitemap/cache.js'
@@ -27,54 +28,44 @@ const router = Router()
 // Apply auth + admin check to every route in this file
 router.use(requireAuth, requireAdmin)
 
-// ── GET /api/admin/pending ────────────────────────────────────────────────────
-router.get('/pending', async (req, res) => {
-  const { data, error } = await supabase
-    .from('memes')
-    .select('id, title, category, thumbnail_url, public_url, created_at, uploader_id, format, file_size_bytes')
-    .eq('is_published', false)
-    .order('created_at', { ascending: false })
+const pick = (m) => m && { id: m.id, title: m.title, category: m.category }
 
-  if (error) {
-    console.error('[admin/pending]', error.message)
-    return res.status(500).json({ error: 'Failed to fetch pending memes.' })
+// ── GET /api/admin/pending ────────────────────────────────────────────────────
+router.get('/pending', async (_req, res) => {
+  try {
+    const memes = await listAllRows('memes', [
+      Query.equal('is_published', false),
+      Query.orderDesc('created_at'),
+      Query.select(['$id', 'title', 'category', 'thumbnail_url', 'public_url', 'created_at', 'uploader_id', 'format', 'file_size_bytes']),
+    ], { cap: 1000 })
+    res.json({ memes })
+  } catch (err) {
+    console.error('[admin/pending]', err.message)
+    res.status(500).json({ error: 'Failed to fetch pending memes.' })
   }
-  res.json({ memes: data ?? [] })
 })
 
 // ── POST /api/admin/approve/:memeId ──────────────────────────────────────────
 router.post('/approve/:memeId', async (req, res) => {
   const { memeId } = req.params
 
-  const { data, error } = await supabase
-    .from('memes')
-    .update({ is_published: true })
-    .eq('id', memeId)
-    .eq('is_published', false) // safety: only approve actually-pending memes
-    .select('id, title, category')
-    .single()
-
-  if (error || !data) {
+  // safety: only approve actually-pending memes
+  const existing = await getRow('memes', memeId).catch(() => null)
+  if (!existing || existing.is_published) {
     return res.status(404).json({ error: 'Meme not found or already published.' })
   }
+  const data = pick(await updateRow('memes', memeId, { is_published: true }).catch(() => null))
+  if (!data) return res.status(404).json({ error: 'Meme not found or already published.' })
 
-  // Publishing is what makes the page indexable, so this is the moment the URL
-  // must enter the sitemap.
   onContentChanged({
     reason: 'approve',
     memes: [data],
     paths: [...FEED_PATHS, feedPathForCategory(data.category)].filter(Boolean),
   })
 
-  // Notify users who have shown interest in this category. Fire-and-forget:
-  // an approval must not fail because the fan-out did, and the admin is not
-  // waiting on notification delivery. notify_new_content() is idempotent on
-  // (user_id, dedupe_key), so a re-approval cannot double-notify.
-  supabase
-    .rpc('notify_new_content', { p_meme_id: memeId })
-    .then(({ error: notifyErr }) => {
-      if (notifyErr) console.error('[admin/approve] notify_new_content:', notifyErr.message)
-    })
+  // Fire-and-forget fan-out; idempotent per (user, meme).
+  notifyNewContent(memeId).catch((notifyErr) =>
+    console.error('[admin/approve] notify_new_content:', notifyErr.message))
 
   res.json({ ok: true, meme: data })
 })
@@ -84,47 +75,26 @@ router.delete('/reject/:memeId', async (req, res) => {
   const { memeId } = req.params
 
   // Fetch keys before deleting so we can remove from Spaces too
-  const { data: meme, error: fetchErr } = await supabase
-    .from('memes')
-    .select('id, title, category, spaces_key, thumbnail_spaces_key')
-    .eq('id', memeId)
-    .single()
+  const meme = await getRow('memes', memeId).catch(() => null)
+  if (!meme) return res.status(404).json({ error: 'Meme not found.' })
 
-  if (fetchErr || !meme) {
-    return res.status(404).json({ error: 'Meme not found.' })
-  }
-
-  // Delete from Supabase first
-  const { error: delErr } = await supabase
-    .from('memes')
-    .delete()
-    .eq('id', memeId)
-
-  if (delErr) {
-    console.error('[admin/reject] Supabase delete error:', delErr.message)
+  try {
+    await deleteRow('memes', memeId)
+  } catch (delErr) {
+    console.error('[admin/reject] Appwrite delete error:', delErr.message)
     return res.status(500).json({ error: 'Failed to delete meme record.' })
   }
 
-  // Drop the URL from the sitemap immediately — leaving a deleted page listed
-  // earns crawl budget spent on 404s and "submitted URL not found" errors in
-  // Search Console. The IndexNow submission is what prompts a recrawl that
-  // sees the 404 and deindexes the page.
   onContentChanged({
     reason: 'reject',
-    memes: [meme],
+    memes: [pick(meme)],
     paths: [...FEED_PATHS, feedPathForCategory(meme.category)].filter(Boolean),
   })
 
-  // Delete files from Spaces (fire-and-forget — don't block response on this)
   const keys = [meme.spaces_key, meme.thumbnail_spaces_key].filter(Boolean)
   if (keys.length) {
     spaces
-      .send(
-        new DeleteObjectsCommand({
-          Bucket: BUCKET,
-          Delete: { Objects: keys.map((Key) => ({ Key })) },
-        }),
-      )
+      .send(new DeleteObjectsCommand({ Bucket: BUCKET, Delete: { Objects: keys.map((Key) => ({ Key })) } }))
       .catch((err) => console.error('[admin/reject] Spaces delete error:', err.message))
   }
 
@@ -134,37 +104,26 @@ router.delete('/reject/:memeId', async (req, res) => {
 // ── PATCH /api/admin/rename/:memeId ──────────────────────────────────────────
 router.patch('/rename/:memeId', async (req, res) => {
   const { memeId } = req.params
-  const title = (req.body.title ?? '').trim()
+  const title = (req.body?.title ?? '').trim()
 
   if (!title) return res.status(400).json({ error: 'title is required.' })
   if (title.length > 200) return res.status(400).json({ error: 'title must be 200 chars or fewer.' })
 
-  // The title is part of the canonical slug, so a rename moves the page's URL.
-  // Read the old row first to keep a reference to the outgoing URL.
-  const { data: previous } = await supabase
-    .from('memes')
-    .select('id, title, category')
-    .eq('id', memeId)
-    .single()
+  // The title is part of the canonical slug; keep the old row to resubmit its URL.
+  const previous = pick(await getRow('memes', memeId).catch(() => null))
+  if (!previous) return res.status(404).json({ error: 'Meme not found.' })
 
-  const { data, error } = await supabase
-    .from('memes')
-    .update({ title })
-    .eq('id', memeId)
-    .select('id, title, category')
-    .single()
-
-  if (error || !data) {
-    console.error('[admin/rename]', error?.message)
-    return res.status(404).json({ error: 'Meme not found.' })
+  let data
+  try {
+    data = pick(await updateRow('memes', memeId, { title }))
+  } catch (err) {
+    console.error('[admin/rename]', err.message)
   }
+  if (!data) return res.status(404).json({ error: 'Meme not found.' })
 
-  // Submit both URLs. MemePage resolves a row from the trailing UUID, so the
-  // old slug still renders — but it now advertises the new slug as canonical,
-  // and a recrawl is what tells the engine to follow that.
   onContentChanged({
     reason: 'rename',
-    memes: previous && previous.title !== data.title ? [data, previous] : [data],
+    memes: previous.title !== data.title ? [data, previous] : [data],
     paths: [...FEED_PATHS, feedPathForCategory(data.category)].filter(Boolean),
   })
 
@@ -173,8 +132,6 @@ router.patch('/rename/:memeId', async (req, res) => {
 
 // ── GET /api/admin/sitemap/status ────────────────────────────────────────────
 router.get('/sitemap/status', async (_req, res) => {
-  // `migrations` reports which optional DB features the generator detected, so
-  // an unapplied migration is visible here rather than only in the server log.
   res.json({
     cache: sitemapStats(),
     indexNow: indexNowStatus(),
@@ -183,11 +140,6 @@ router.get('/sitemap/status', async (_req, res) => {
 })
 
 // ── POST /api/admin/sitemap/refresh ──────────────────────────────────────────
-/**
- * Manual purge. Regeneration is automatic on publish/update/delete, so this is
- * an operational escape hatch — useful after editing STATIC_PAGES, or after a
- * direct database change that bypassed these routes.
- */
 router.post('/sitemap/refresh', (_req, res) => {
   const cleared = onContentChanged({ reason: 'manual refresh' })
   res.json({ ok: true, cleared: cleared ?? null, cache: sitemapStats() })

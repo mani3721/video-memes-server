@@ -24,6 +24,7 @@ import stickersRouter from './routes/stickers.js'
 import collectionsRouter from './routes/collections.js'
 import memesRouter from './routes/memes.js'
 import blogRouter from './routes/blog.js'
+import meRouter from './routes/me.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
 import { climateThemeFor, locationCodesFromHeaders } from './lib/climateTheme.js'
 import { appwriteStatus } from './db/appwrite.js'
@@ -127,6 +128,7 @@ app.use('/api/collections', collectionsRouter)
 app.use('/api/trending', trendingRouter)
 app.use('/api/memes', memesRouter)
 app.use('/api/blog', blogRouter)
+app.use('/api/me', meRouter)
 // More specific admin mounts first — adminRouter owns /api/admin/:action paths
 // like /approve/:id, so a bare /api/admin mount would shadow these.
 app.use('/api/admin/announcements', adminNotificationsRouter)

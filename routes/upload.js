@@ -19,7 +19,7 @@ import { fileTypeFromBuffer } from 'file-type'
 import sharp from 'sharp'
 import { PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { spaces, BUCKET, CDN_URL } from '../spacesClient.js'
-import { supabase } from '../supabaseClient.js'
+import { createRow } from '../db/appwrite.js'
 import { requireAuth } from '../middleware/auth.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
@@ -199,10 +199,12 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
       heightPx = meta.height ?? null
     }
 
-    // 6 — Insert metadata into Supabase (all uploads are public immediately)
-    const { data: meme, error: dbErr } = await supabase
-      .from('memes')
-      .insert({
+    // 6 — Insert metadata into Appwrite (all uploads are public immediately)
+    const now = new Date().toISOString()
+    let meme = null
+    let dbErr = null
+    try {
+      meme = await createRow('memes', {
         title,
         spaces_key: mainKey,
         public_url: publicUrl,
@@ -218,20 +220,24 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
         height_px: heightPx,
         uploader_id: req.user.id,
         is_published: true,
+        download_count: 0,
+        laugh_count: 0,
+        fire_count: 0,
+        skull_count: 0,
+        view_count: 0,
+        content_status: 'published',
+        created_at: now,
+        updated_at: now,
       })
-      .select()
-      .single()
+    } catch (err) {
+      dbErr = err
+    }
 
     if (dbErr) {
-      // Log the full error, not just .message. A CHECK violation puts the
-      // constraint name in .message but the offending value in .details, and
-      // without it this failure looks generic — which is how a format
-      // mismatch went unnoticed until users hit it.
       console.error(
-        '[upload] Supabase insert error:',
+        '[upload] Appwrite insert error:',
         dbErr.message,
-        dbErr.details ?? '',
-        dbErr.hint ?? '',
+        dbErr.type ?? '',
         `(format=${allowed.format} category=${category})`,
       )
 

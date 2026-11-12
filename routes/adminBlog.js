@@ -1,20 +1,17 @@
 /**
- * Blog management — mounted at /api/admin/blog.
+ * Blog management — mounted at /api/admin/blog (Appwrite `blog_posts`).
  *
  * GET    /         — every post, any status
  * POST   /         — create
  * PATCH  /:postId  — edit
  * DELETE /:postId  — soft-remove (status = 'removed'); ?hard=true to really delete
  *
- * Blog posts are a separate content type from meme pages: editorial articles
- * that carry their own unique long-form copy and link internally to meme pages.
- * Public reads do not come through here — the client queries Supabase directly
- * and RLS exposes only published posts.
+ * Public reads go through routes/blog.js, which only returns published posts.
  */
 
 import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../supabaseClient.js'
+import { Query, getRow, createRow, updateRow, deleteRow, listRows, listAllRows } from '../db/appwrite.js'
 import { onContentChanged } from '../lib/sitemap/notify.js'
 
 const router = Router()
@@ -22,7 +19,6 @@ router.use(requireAuth, requireAdmin)
 
 const STATUSES = ['draft', 'published', 'removed']
 
-/** Matches the slug CHECK constraint in migration 003. */
 function slugify(input) {
   return String(input ?? '')
     .toLowerCase()
@@ -80,10 +76,20 @@ function parsePostPatch(body, { requireTitle = false } = {}) {
   return { patch }
 }
 
-/**
- * Publishing or unpublishing a post changes the blog sitemap, so the cache has
- * to drop. Editing a draft changes nothing public.
- */
+/** Replaces the old UNIQUE(slug) constraint. */
+async function slugTaken(slug, exceptId) {
+  const { rows } = await listRows('blog_posts', [Query.equal('slug', slug), Query.limit(2)])
+  return rows.some((r) => r.id !== exceptId)
+}
+
+/** Mirrors the old published_at trigger: stamp it the first time a post goes live. */
+function withPublishedAt(patch, previous) {
+  if (patch.status === 'published' && !previous?.published_at) {
+    return { ...patch, published_at: new Date().toISOString() }
+  }
+  return patch
+}
+
 function notifyIfPublic(post, previousStatus, reason) {
   const wasPublic = previousStatus === 'published'
   const isPublic = post?.status === 'published'
@@ -97,21 +103,15 @@ function notifyIfPublic(post, previousStatus, reason) {
 
 // ── GET /api/admin/blog ──────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
-  // `body` is included so the manager can open a post for editing without a
-  // second round-trip. Without it, saving an existing post would blank the body.
-  let query = supabase
-    .from('blog_posts')
-    .select('id, slug, title, excerpt, body, cover_url, status, published_at, created_at, updated_at')
-
-  if (STATUSES.includes(req.query.status)) query = query.eq('status', req.query.status)
-
-  const { data, error } = await query.order('created_at', { ascending: false })
-
-  if (error) {
-    console.error('[admin/blog] list failed:', error.message)
-    return res.status(500).json({ error: 'Failed to load blog posts.' })
+  try {
+    const queries = [Query.orderDesc('created_at')]
+    if (STATUSES.includes(req.query.status)) queries.push(Query.equal('status', req.query.status))
+    const posts = await listAllRows('blog_posts', queries, { cap: 2000 })
+    res.json({ posts })
+  } catch (err) {
+    console.error('[admin/blog] list failed:', err.message)
+    res.status(500).json({ error: 'Failed to load blog posts.' })
   }
-  res.json({ posts: data ?? [] })
 })
 
 // ── POST /api/admin/blog ─────────────────────────────────────────────────────
@@ -119,31 +119,30 @@ router.post('/', async (req, res) => {
   const parsed = parsePostPatch(req.body ?? {}, { requireTitle: true })
   if (parsed.error) return res.status(400).json({ error: parsed.error })
 
-  // Derive the slug from the title when the author has not set one.
   const slug = parsed.patch.slug ?? slugify(parsed.patch.title)
   if (!slug) return res.status(400).json({ error: 'Could not derive a slug from the title — set one explicitly.' })
 
-  const { data, error } = await supabase
-    .from('blog_posts')
-    .insert({
-      ...parsed.patch,
+  try {
+    if (await slugTaken(slug)) return res.status(409).json({ error: `The slug "${slug}" is already taken.` })
+
+    const now = new Date().toISOString()
+    const data = await createRow('blog_posts', {
+      status: 'draft',
+      ...withPublishedAt(parsed.patch, null),
       slug,
       body: parsed.patch.body ?? '',
       author_id: req.user.id,
       last_updated_by: req.user.id,
+      created_at: now,
+      updated_at: now,
     })
-    .select('*')
-    .single()
 
-  if (error) {
-    // 23505 = unique_violation on slug.
-    if (error.code === '23505') return res.status(409).json({ error: `The slug "${slug}" is already taken.` })
-    console.error('[admin/blog] create failed:', error.message)
-    return res.status(500).json({ error: 'Failed to create post.' })
+    notifyIfPublic(data, null, 'blog create')
+    res.status(201).json({ ok: true, post: data })
+  } catch (err) {
+    console.error('[admin/blog] create failed:', err.message)
+    res.status(500).json({ error: 'Failed to create post.' })
   }
-
-  notifyIfPublic(data, null, 'blog create')
-  res.status(201).json({ ok: true, post: data })
 })
 
 // ── PATCH /api/admin/blog/:postId ────────────────────────────────────────────
@@ -151,66 +150,56 @@ router.patch('/:postId', async (req, res) => {
   const parsed = parsePostPatch(req.body ?? {})
   if (parsed.error) return res.status(400).json({ error: parsed.error })
 
-  const { data: previous } = await supabase
-    .from('blog_posts')
-    .select('id, slug, status')
-    .eq('id', req.params.postId)
-    .single()
+  try {
+    const previous = await getRow('blog_posts', req.params.postId)
+    if (!previous) return res.status(404).json({ error: 'Post not found.' })
 
-  if (!previous) return res.status(404).json({ error: 'Post not found.' })
+    if (parsed.patch.slug && parsed.patch.slug !== previous.slug && await slugTaken(parsed.patch.slug, previous.id)) {
+      return res.status(409).json({ error: 'That slug is already taken.' })
+    }
 
-  const { data, error } = await supabase
-    .from('blog_posts')
-    .update({ ...parsed.patch, last_updated_by: req.user.id })
-    .eq('id', req.params.postId)
-    .select('*')
-    .single()
+    const data = await updateRow('blog_posts', req.params.postId, {
+      ...withPublishedAt(parsed.patch, previous),
+      last_updated_by: req.user.id,
+      updated_at: new Date().toISOString(),
+    })
 
-  if (error || !data) {
-    if (error?.code === '23505') return res.status(409).json({ error: 'That slug is already taken.' })
-    console.error('[admin/blog] update failed:', error?.message)
-    return res.status(500).json({ error: 'Failed to save post.' })
+    notifyIfPublic(data, previous.status, 'blog edit')
+    if (previous.slug !== data.slug && previous.status === 'published') {
+      onContentChanged({ reason: 'blog slug change', paths: [`/blog/${previous.slug}`] })
+    }
+
+    res.json({ ok: true, post: data })
+  } catch (err) {
+    console.error('[admin/blog] update failed:', err.message)
+    res.status(500).json({ error: 'Failed to save post.' })
   }
-
-  notifyIfPublic(data, previous.status, 'blog edit')
-  // A slug change leaves the old URL dead, so it needs a recrawl too.
-  if (previous.slug !== data.slug && previous.status === 'published') {
-    onContentChanged({ reason: 'blog slug change', paths: [`/blog/${previous.slug}`] })
-  }
-
-  res.json({ ok: true, post: data })
 })
 
 // ── DELETE /api/admin/blog/:postId ───────────────────────────────────────────
-/**
- * Soft-removes by default so a mistaken delete is recoverable and the audit
- * trail survives — the same reasoning as content_status on memes.
- */
 router.delete('/:postId', async (req, res) => {
   const hard = req.query.hard === 'true'
 
-  const { data: previous } = await supabase
-    .from('blog_posts')
-    .select('id, slug, status')
-    .eq('id', req.params.postId)
-    .single()
+  try {
+    const previous = await getRow('blog_posts', req.params.postId)
+    if (!previous) return res.status(404).json({ error: 'Post not found.' })
 
-  if (!previous) return res.status(404).json({ error: 'Post not found.' })
+    if (hard) {
+      await deleteRow('blog_posts', req.params.postId)
+    } else {
+      await updateRow('blog_posts', req.params.postId, {
+        status: 'removed',
+        last_updated_by: req.user.id,
+        updated_at: new Date().toISOString(),
+      })
+    }
 
-  const { error } = hard
-    ? await supabase.from('blog_posts').delete().eq('id', req.params.postId)
-    : await supabase
-        .from('blog_posts')
-        .update({ status: 'removed', last_updated_by: req.user.id })
-        .eq('id', req.params.postId)
-
-  if (error) {
-    console.error('[admin/blog] delete failed:', error.message)
-    return res.status(500).json({ error: 'Failed to delete post.' })
+    notifyIfPublic({ slug: previous.slug, status: 'removed' }, previous.status, 'blog delete')
+    res.json({ ok: true, hard })
+  } catch (err) {
+    console.error('[admin/blog] delete failed:', err.message)
+    res.status(500).json({ error: 'Failed to delete post.' })
   }
-
-  notifyIfPublic({ slug: previous.slug, status: 'removed' }, previous.status, 'blog delete')
-  res.json({ ok: true, hard })
 })
 
 export default router

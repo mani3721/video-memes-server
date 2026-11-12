@@ -6,26 +6,27 @@
  */
 import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../supabaseClient.js'
+import { Query, listRows, createRow, updateRow } from '../db/appwrite.js'
 
 const VALID_KEYS = new Set(['feed_tab', 'stickers_tab', 'ai_chat_tab'])
 
 const router = Router()
 router.use(requireAuth, requireAdmin)
 
-router.get('/', async (_req, res) => {
-  const { data, error } = await supabase
-    .from('feature_flags')
-    .select('key, enabled, updated_at')
-    .order('key')
+const shape = ({ key, enabled, updated_at }) => ({ key, enabled, updated_at })
 
-  if (error) return res.status(500).json({ error: error.message })
-  res.json({ flags: data ?? [] })
+router.get('/', async (_req, res) => {
+  try {
+    const { rows } = await listRows('feature_flags', [Query.orderAsc('key'), Query.limit(100)])
+    res.json({ flags: rows.map(shape) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 router.patch('/:key', async (req, res) => {
   const { key } = req.params
-  const { enabled } = req.body
+  const { enabled } = req.body ?? {}
 
   if (!VALID_KEYS.has(key)) {
     return res.status(400).json({ error: `Unknown feature flag: ${key}` })
@@ -34,14 +35,14 @@ router.patch('/:key', async (req, res) => {
     return res.status(400).json({ error: '`enabled` must be a boolean.' })
   }
 
-  const { data, error } = await supabase
-    .from('feature_flags')
-    .upsert({ key, enabled, updated_at: new Date().toISOString() }, { onConflict: 'key' })
-    .select('key, enabled, updated_at')
-    .single()
-
-  if (error) return res.status(500).json({ error: error.message })
-  res.json({ flag: data })
+  try {
+    const data = { key, enabled, updated_at: new Date().toISOString() }
+    const { rows } = await listRows('feature_flags', [Query.equal('key', key), Query.limit(1)])
+    const flag = rows[0] ? await updateRow('feature_flags', rows[0].id, data) : await createRow('feature_flags', data)
+    res.json({ flag: shape(flag) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 export default router

@@ -17,7 +17,7 @@ import archiver from 'archiver'
 import { DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { GoogleGenAI } from '@google/genai'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../supabaseClient.js'
+import { Query, getRow, updateRow, deleteRow, listRows, listAllRows } from '../db/appwrite.js'
 import { spaces, BUCKET } from '../spacesClient.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import {
@@ -32,32 +32,29 @@ const router = Router()
 router.use(requireAuth, requireAdmin)
 
 /** Columns the table view needs. description_long is summarised, not sent whole. */
-const LIST_COLUMNS =
-  'id, title, category, format, thumbnail_url, content_status, needs_description, ' +
-  'download_count, file_size_bytes, created_at, updated_at, last_updated_by, description_long'
+const LIST_COLUMNS = [
+  '$id', 'title', 'category', 'format', 'thumbnail_url', 'content_status', 'needs_description',
+  'download_count', 'file_size_bytes', 'created_at', 'updated_at', 'last_updated_by', 'description_long',
+]
 
 const MAX_PAGE_SIZE = 100
 
-/** Escape PostgREST's `ilike` wildcards so a literal % or _ in a search does not match everything. */
-function escapeLike(term) {
-  return term.replace(/[\\%_,()]/g, (c) => `\\${c}`)
-}
-
 /**
- * Applies the table's filter set to a query. Shared by the list endpoint and
+ * The table's filter set as Appwrite queries. Shared by the list endpoint and
  * the "download all matching" ZIP so both always agree on what "all" means.
  */
-function applyListFilters(query, { q, category, status, needsDescription, missingDescription, from, to } = {}) {
-  if (typeof q === 'string' && q.trim()) query = query.ilike('title', `%${escapeLike(q.trim())}%`)
-  if (category && CATEGORIES.includes(category)) query = query.eq('category', category)
-  if (status && CONTENT_STATUSES.includes(status)) query = query.eq('content_status', status)
-  if (String(needsDescription) === 'true') query = query.eq('needs_description', true)
-  // Distinct from the triage flag: "no long description written yet" is a fact
-  // about the data, whereas needs_description is an admin's judgement call.
-  if (String(missingDescription) === 'true') query = query.is('description_long', null)
-  if (from) query = query.gte('created_at', from)
-  if (to) query = query.lte('created_at', to)
-  return query
+function listFilters({ q, category, status, needsDescription, missingDescription, from, to } = {}) {
+  const out = []
+  // Uses the fulltext index on title.
+  if (typeof q === 'string' && q.trim()) out.push(Query.search('title', q.trim()))
+  if (category && CATEGORIES.includes(category)) out.push(Query.equal('category', category))
+  if (status && CONTENT_STATUSES.includes(status)) out.push(Query.equal('content_status', status))
+  if (String(needsDescription) === 'true') out.push(Query.equal('needs_description', true))
+  // Distinct from the triage flag: "no long description written yet" is a fact.
+  if (String(missingDescription) === 'true') out.push(Query.isNull('description_long'))
+  if (from) out.push(Query.greaterThanEqual('created_at', from))
+  if (to) out.push(Query.lessThanEqual('created_at', to))
+  return out
 }
 
 // ── GET /api/admin/content ───────────────────────────────────────────────────
@@ -65,26 +62,26 @@ router.get('/', async (req, res) => {
   const page = Math.max(1, Number.parseInt(req.query.page ?? '1', 10) || 1)
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.pageSize ?? '25', 10) || 25))
 
-  const query = applyListFilters(supabase.from('memes').select(LIST_COLUMNS, { count: 'exact' }), req.query)
+  try {
+    const { rows, total } = await listRows('memes', [
+      ...listFilters(req.query),
+      Query.select(LIST_COLUMNS),
+      Query.orderDesc('created_at'),
+      Query.limit(pageSize),
+      Query.offset((page - 1) * pageSize),
+    ])
 
-  const offset = (page - 1) * pageSize
-  const { data, count, error } = await query
-    .order('created_at', { ascending: false })
-    .range(offset, offset + pageSize - 1)
+    // Send a word count instead of the full description.
+    const items = rows.map(({ description_long, ...row }) => ({
+      ...row,
+      description_words: countWords(description_long),
+    }))
 
-  if (error) {
-    console.error('[admin/content] list failed:', error.message)
-    return res.status(500).json({ error: 'Failed to load content.' })
+    res.json({ items, total, page, pageSize })
+  } catch (err) {
+    console.error('[admin/content] list failed:', err.message)
+    res.status(500).json({ error: 'Failed to load content.' })
   }
-
-  // Send a word count instead of the full description: the table only needs to
-  // show how complete each row is, and the bodies would dominate the payload.
-  const items = (data ?? []).map(({ description_long, ...row }) => ({
-    ...row,
-    description_words: countWords(description_long),
-  }))
-
-  res.json({ items, total: count ?? 0, page, pageSize })
 })
 
 // ── POST /api/admin/content/bulk ─────────────────────────────────────────────
@@ -115,15 +112,14 @@ router.post('/bulk', async (req, res) => {
   }
 
   patch.last_updated_by = req.user.id
+  patch.updated_at = new Date().toISOString()
 
-  const { data, error } = await supabase
-    .from('memes')
-    .update(patch)
-    .in('id', ids)
-    .select('id, title, category, content_status')
-
-  if (error) {
-    console.error('[admin/content] bulk failed:', error.message)
+  let data
+  try {
+    const updated = await Promise.all(ids.map((id) => updateRow('memes', id, patch)))
+    data = updated.filter(Boolean).map(({ id, title, category, content_status }) => ({ id, title, category, content_status }))
+  } catch (err) {
+    console.error('[admin/content] bulk failed:', err.message)
     return res.status(500).json({ error: 'Bulk edit failed.' })
   }
 
@@ -173,30 +169,33 @@ function appendAndWait(archive, stream, name) {
 
 router.post('/download', async (req, res) => {
   const body = req.body ?? {}
-  let query = supabase.from('memes').select('id, title, spaces_key, filename, format, category', { count: 'exact' })
+  let filters
 
   if (body.all === true) {
-    query = applyListFilters(query, body.filters ?? {})
+    filters = listFilters(body.filters ?? {})
   } else {
     const ids = Array.isArray(body.ids) ? body.ids.filter((id) => typeof id === 'string' && id.trim()) : []
     if (!ids.length) return res.status(400).json({ error: 'Supply ids (non-empty array) or all: true.' })
     if (ids.length > MAX_ZIP_ITEMS) {
       return res.status(400).json({ error: `A ZIP download is limited to ${MAX_ZIP_ITEMS} items.` })
     }
-    query = query.in('id', ids)
+    filters = [Query.equal('$id', ids)]
   }
 
-  // range is inclusive, so this fetches one row past the cap — an oversized
-  // "all" request is rejected up front rather than silently truncated.
-  const { data: memes, count, error } = await query
-    .order('created_at', { ascending: false })
-    .range(0, MAX_ZIP_ITEMS)
-
-  if (error) {
-    console.error('[admin/content] download lookup failed:', error.message)
+  // Fetch one row past the cap so an oversized "all" request is rejected up
+  // front rather than silently truncated.
+  let memes
+  try {
+    memes = await listAllRows('memes', [
+      ...filters,
+      Query.select(['$id', 'title', 'spaces_key', 'filename', 'format', 'category']),
+      Query.orderDesc('created_at'),
+    ], { pageSize: 100, cap: MAX_ZIP_ITEMS + 1 })
+  } catch (err) {
+    console.error('[admin/content] download lookup failed:', err.message)
     return res.status(500).json({ error: 'Failed to look up files.' })
   }
-  const total = count ?? memes?.length ?? 0
+  const total = memes.length
   if (total > MAX_ZIP_ITEMS) {
     return res.status(400).json({
       error: `${total} items match — a ZIP download is limited to ${MAX_ZIP_ITEMS}. Narrow the filters and try again.`,
@@ -257,13 +256,8 @@ router.post('/download', async (req, res) => {
 
 // ── GET /api/admin/content/:memeId ───────────────────────────────────────────
 router.get('/:memeId', async (req, res) => {
-  const { data, error } = await supabase
-    .from('memes')
-    .select('*')
-    .eq('id', req.params.memeId)
-    .single()
-
-  if (error || !data) return res.status(404).json({ error: 'Content not found.' })
+  const data = await getRow('memes', req.params.memeId).catch(() => null)
+  if (!data) return res.status(404).json({ error: 'Content not found.' })
   res.json({ item: { ...data, description_words: countWords(data.description_long) } })
 })
 
@@ -276,25 +270,20 @@ router.patch('/:memeId', async (req, res) => {
 
   // The title feeds the canonical slug, so a rename moves the URL. Read the
   // outgoing row first so both URLs can be submitted for recrawl.
-  const { data: previous } = await supabase
-    .from('memes')
-    .select('id, title, category, content_status')
-    .eq('id', memeId)
-    .single()
-
+  const previous = await getRow('memes', memeId).catch(() => null)
   if (!previous) return res.status(404).json({ error: 'Content not found.' })
 
-  const { data, error } = await supabase
-    .from('memes')
-    .update({ ...parsed.patch, last_updated_by: req.user.id })
-    .eq('id', memeId)
-    .select('*')
-    .single()
-
-  if (error || !data) {
-    console.error('[admin/content] update failed:', error?.message)
-    return res.status(500).json({ error: 'Failed to save changes.' })
+  let data
+  try {
+    data = await updateRow('memes', memeId, {
+      ...parsed.patch,
+      last_updated_by: req.user.id,
+      updated_at: new Date().toISOString(),
+    })
+  } catch (err) {
+    console.error('[admin/content] update failed:', err.message)
   }
+  if (!data) return res.status(500).json({ error: 'Failed to save changes.' })
 
   // Descriptions are page content, not sitemap membership — but updated_at
   // moves either way, so lastmod advances and the page gets recrawled.
@@ -326,13 +315,8 @@ router.post('/:memeId/generate', async (req, res) => {
     return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on the server.' })
   }
 
-  const { data: meme, error } = await supabase
-    .from('memes')
-    .select('id, title, category, format, mood_tags')
-    .eq('id', req.params.memeId)
-    .single()
-
-  if (error || !meme) return res.status(404).json({ error: 'Content not found.' })
+  const meme = await getRow('memes', req.params.memeId).catch(() => null)
+  if (!meme) return res.status(404).json({ error: 'Content not found.' })
 
   const selfUrl    = memePageUrl(meme)
   const categoryUrl = `${SITE_ORIGIN}/${meme.category ?? 'videos'}`
@@ -395,17 +379,12 @@ Structure exactly:
 router.delete('/:memeId', async (req, res) => {
   const { memeId } = req.params
 
-  const { data: meme, error: fetchErr } = await supabase
-    .from('memes')
-    .select('id, title, category, spaces_key, thumbnail_spaces_key')
-    .eq('id', memeId)
-    .single()
+  const meme = await getRow('memes', memeId).catch(() => null)
+  if (!meme) return res.status(404).json({ error: 'Content not found.' })
 
-  if (fetchErr || !meme) return res.status(404).json({ error: 'Content not found.' })
-
-  const { error: delErr } = await supabase.from('memes').delete().eq('id', memeId)
-
-  if (delErr) {
+  try {
+    await deleteRow('memes', memeId)
+  } catch (delErr) {
     console.error('[admin/content] delete failed:', delErr.message)
     return res.status(500).json({ error: 'Failed to delete meme.' })
   }

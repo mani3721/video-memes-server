@@ -8,9 +8,22 @@
  * table names, so they are resolved by name once per process and cached.
  */
 
-import { Client, TablesDB, Query, ID, AppwriteException } from 'node-appwrite'
+import { createHash } from 'node:crypto'
+import { Client, TablesDB, Account, Query, ID, AppwriteException } from 'node-appwrite'
 
 export { Query, ID, AppwriteException }
+
+/**
+ * Verify a browser-issued Appwrite JWT (account.createJWT()) and return the
+ * user it belongs to. Uses a fresh client per call — the JWT is per-request.
+ */
+export async function userFromJwt(jwt) {
+  const client = new Client()
+    .setEndpoint(process.env.APPWRITE_ENDPOINT)
+    .setProject(process.env.APPWRITE_PROJECT_ID)
+    .setJWT(jwt)
+  return new Account(client).get()
+}
 
 const REQUIRED = ['APPWRITE_ENDPOINT', 'APPWRITE_PROJECT_ID', 'APPWRITE_API_KEY', 'APPWRITE_DATABASE_ID']
 
@@ -138,6 +151,58 @@ export async function createRow(table, data, rowId = ID.unique()) {
     data,
   })
   return toPlain(row)
+}
+
+export async function updateRow(table, rowId, data) {
+  try {
+    const row = await tablesDB().updateRow({
+      databaseId: databaseId(),
+      tableId: await tableId(table),
+      rowId,
+      data,
+    })
+    return toPlain(row)
+  } catch (err) {
+    if (err instanceof AppwriteException && err.code === 404) return null
+    throw err
+  }
+}
+
+/** Create or replace a row with a known ID. */
+export async function upsertRow(table, rowId, data) {
+  const row = await tablesDB().upsertRow({
+    databaseId: databaseId(),
+    tableId: await tableId(table),
+    rowId,
+    data,
+  })
+  return toPlain(row)
+}
+
+/** Delete a row; returns false when it did not exist. */
+export async function deleteRow(table, rowId) {
+  try {
+    await tablesDB().deleteRow({ databaseId: databaseId(), tableId: await tableId(table), rowId })
+    return true
+  } catch (err) {
+    if (err instanceof AppwriteException && err.code === 404) return false
+    throw err
+  }
+}
+
+/** Delete every row matching `queries` (pages through them). */
+export async function deleteRowsWhere(table, queries) {
+  const rows = await listAllRows(table, queries)
+  await Promise.all(rows.map((r) => deleteRow(table, r.id)))
+  return rows.length
+}
+
+/**
+ * Appwrite row IDs are limited to 36 chars of [a-zA-Z0-9._-]. Derive a stable
+ * ID from a composite key so "insert if absent" is a 409 instead of a duplicate.
+ */
+export function stableId(...parts) {
+  return 'k' + createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 35)
 }
 
 export async function incrementColumn(table, rowId, column, value = 1) {
