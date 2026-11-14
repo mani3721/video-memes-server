@@ -15,7 +15,7 @@
  */
 
 import { Router } from 'express'
-import { listRows, getRow, incrementColumn, Query } from '../db/appwrite.js'
+import { listRows, getRow, incrementColumn, Query } from '../db/d1.js'
 
 const router = Router()
 

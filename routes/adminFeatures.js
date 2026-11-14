@@ -6,7 +6,7 @@
  */
 import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { Query, listRows, createRow, updateRow } from '../db/appwrite.js'
+import { Query, listRows, createRow, updateRow } from '../db/d1.js'
 
 const VALID_KEYS = new Set(['feed_tab', 'stickers_tab', 'ai_chat_tab'])
 

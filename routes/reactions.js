@@ -16,9 +16,8 @@
 import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
 import {
-  Query, AppwriteException, createRow, deleteRow, getRow, incrementColumn, listRows, stableId,
-  tablesDB, databaseId, tableId,
-} from '../db/appwrite.js'
+  Query, DbError, createRow, deleteRowsWhere, getRow, incrementColumn, decrementColumn, listRows,
+} from '../db/d1.js'
 import { optionalAuth } from '../middleware/auth.js'
 
 const router = Router()
@@ -45,17 +44,6 @@ function actorKeyFor(req, res) {
   return `guest:${getOrCreateSession(req, res)}`
 }
 
-async function decrementColumn(table, rowId, column) {
-  return tablesDB().decrementRowColumn({
-    databaseId: databaseId(),
-    tableId: await tableId(table),
-    rowId,
-    column,
-    value: 1,
-    min: 0,
-  })
-}
-
 // ── POST /api/reactions ───────────────────────────────────────────────────────
 router.post('/', optionalAuth, async (req, res) => {
   const { memeId, reaction } = req.body ?? {}
@@ -72,18 +60,18 @@ router.post('/', optionalAuth, async (req, res) => {
     const meme = await getRow('memes', memeId)
     if (!meme) return res.status(400).json({ error: 'Unknown meme or reaction.' })
 
-    const eventId = stableId(memeId, reaction, actorKey)
     let reacted
     try {
       await createRow(
         'reaction_events',
         { meme_id: memeId, reaction, actor_key: actorKey, created_at: new Date().toISOString() },
-        eventId,
       )
       reacted = true
     } catch (err) {
-      if (!(err instanceof AppwriteException && err.code === 409)) throw err
-      await deleteRow('reaction_events', eventId)
+      if (!(err instanceof DbError && err.code === 409)) throw err
+      await deleteRowsWhere('reaction_events', [
+        Query.equal('meme_id', memeId), Query.equal('reaction', reaction), Query.equal('actor_key', actorKey),
+      ])
       reacted = false
     }
 

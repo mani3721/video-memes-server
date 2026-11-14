@@ -11,7 +11,7 @@
 
 import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { Query, getRow, createRow, updateRow, deleteRow, listRows, listAllRows } from '../db/appwrite.js'
+import { Query, getRow, createRow, updateRow, deleteRow, listRows, listAllRows } from '../db/d1.js'
 import { onContentChanged } from '../lib/sitemap/notify.js'
 
 const router = Router()

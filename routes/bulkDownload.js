@@ -16,7 +16,7 @@ import { Router } from 'express'
 import archiver from 'archiver'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { spaces, BUCKET } from '../spacesClient.js'
-import { listRows, Query } from '../db/appwrite.js'
+import { listRows, Query } from '../db/d1.js'
 
 const router = Router()
 const MAX_ITEMS = 50
@@ -44,7 +44,7 @@ router.post('/', async (req, res) => {
       Query.limit(memeIds.length),
     ]))
   } catch (err) {
-    console.error('[bulk-download] Appwrite error:', err.message)
+    console.error('[bulk-download] D1 error:', err.message)
     return res.status(500).json({ error: 'Failed to look up files. Please try again.' })
   }
   if (!memes?.length) {

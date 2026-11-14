@@ -17,7 +17,7 @@ import archiver from 'archiver'
 import { DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { GoogleGenAI } from '@google/genai'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { Query, getRow, updateRow, deleteRow, listRows, listAllRows } from '../db/appwrite.js'
+import { Query, getRow, updateRow, deleteRow, listRows, listAllRows } from '../db/d1.js'
 import { spaces, BUCKET } from '../spacesClient.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import {

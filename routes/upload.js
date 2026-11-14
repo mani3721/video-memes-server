@@ -19,7 +19,7 @@ import { fileTypeFromBuffer } from 'file-type'
 import sharp from 'sharp'
 import { PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { spaces, BUCKET, CDN_URL } from '../spacesClient.js'
-import { createRow } from '../db/appwrite.js'
+import { createRow } from '../db/d1.js'
 import { requireAuth } from '../middleware/auth.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
@@ -235,7 +235,7 @@ router.post('/', requireAuth, upload.single('file'), async (req, res) => {
 
     if (dbErr) {
       console.error(
-        '[upload] Appwrite insert error:',
+        '[upload] D1 insert error:',
         dbErr.message,
         dbErr.type ?? '',
         `(format=${allowed.format} category=${category})`,

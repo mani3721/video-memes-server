@@ -10,7 +10,7 @@
  */
 
 import { Router } from 'express'
-import { Query, getRow, createRow, updateRow, listRows } from '../db/appwrite.js'
+import { Query, getRow, createRow, updateRow, listRows } from '../db/d1.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 
 const router = Router()

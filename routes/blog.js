@@ -7,7 +7,7 @@
  */
 
 import { Router } from 'express'
-import { listAllRows, listRows, Query } from '../db/appwrite.js'
+import { listAllRows, listRows, Query } from '../db/d1.js'
 
 const router = Router()
 

@@ -16,7 +16,7 @@
  */
 
 import { Router } from 'express'
-import { listAllRows, listRows, Query } from '../db/appwrite.js'
+import { listRows, sql, Query } from '../db/d1.js'
 
 const router = Router()
 
@@ -49,25 +49,22 @@ function windowStart() {
  * selected, so the payload stays small — today's ~1.5k events are a few tens
  * of kilobytes. If daily volume reaches the cap below, move this to an RPC.
  */
-const EVENT_SCAN_CAP = 100_000
+const CANDIDATE_CAP = 200
 
+/** Aggregated in SQL (indexed on created_at) — one small result, not a row scan. */
 async function countTodayDownloads(since) {
-  let data
+  let results
   try {
-    data = await listAllRows(
-      'download_events',
-      [Query.greaterThanEqual('created_at', since.toISOString()), Query.select(['$id', 'meme_id'])],
-      { cap: EVENT_SCAN_CAP },
-    )
+    ;({ results } = await sql(
+      `SELECT meme_id, COUNT(*) AS n FROM download_events
+       WHERE created_at >= ? AND meme_id IS NOT NULL
+       GROUP BY meme_id ORDER BY n DESC LIMIT ?`,
+      [since.toISOString(), CANDIDATE_CAP],
+    ))
   } catch (err) {
     throw new Error(`download_events read failed: ${err.message}`)
   }
-
-  const counts = new Map()
-  for (const { meme_id } of data) {
-    if (meme_id) counts.set(meme_id, (counts.get(meme_id) ?? 0) + 1)
-  }
-  return counts
+  return new Map(results.map((r) => [r.meme_id, Number(r.n)]))
 }
 
 async function buildPayload({ limit, excludeCategory }) {

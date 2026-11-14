@@ -12,7 +12,7 @@
  */
 
 import { Router } from 'express'
-import { Query, AppwriteException, getRow, listRows, listAllRows, createRow, stableId } from '../db/appwrite.js'
+import { Query, DbError, getRow, listRows, listAllRows, createRow, stableId } from '../db/d1.js'
 import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
@@ -63,7 +63,7 @@ async function markRead(userId, notificationId) {
     )
     return 1
   } catch (err) {
-    if (err instanceof AppwriteException && err.code === 409) return 0
+    if (err instanceof DbError && err.code === 409) return 0
     throw err
   }
 }

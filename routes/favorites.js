@@ -9,7 +9,7 @@
  */
 
 import { Router } from 'express'
-import { Query, AppwriteException, createRow, deleteRow, listAllRows, stableId } from '../db/appwrite.js'
+import { Query, DbError, createRow, deleteRowsWhere, listAllRows, stableId } from '../db/d1.js'
 import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
@@ -26,7 +26,7 @@ export async function addFavorite(userId, memeId) {
       favoriteId(userId, memeId),
     )
   } catch (err) {
-    if (!(err instanceof AppwriteException && err.code === 409)) throw err
+    if (!(err instanceof DbError && err.code === 409)) throw err
   }
 }
 
@@ -67,7 +67,8 @@ router.post('/', async (req, res) => {
 
 router.delete('/:memeId', async (req, res) => {
   try {
-    await deleteRow('favorites', favoriteId(req.user.id, req.params.memeId))
+    // Imported rows keep their original UUIDs, so delete by (user, meme), not by derived ID.
+    await deleteRowsWhere('favorites', [Query.equal('user_id', req.user.id), Query.equal('meme_id', req.params.memeId)])
     res.json({ ok: true })
   } catch (err) {
     console.error('[favorites] delete', err.message)

@@ -27,7 +27,7 @@ import blogRouter from './routes/blog.js'
 import meRouter from './routes/me.js'
 import { startSitemapWarmer } from './lib/sitemap/scheduler.js'
 import { climateThemeFor, locationCodesFromHeaders } from './lib/climateTheme.js'
-import { appwriteStatus } from './db/appwrite.js'
+import { d1Status } from './db/d1.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -160,8 +160,8 @@ app.get('/api/location-theme', (req, res) => {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
-  const appwrite = await appwriteStatus()
-  res.json({ ok: true, ts: Date.now(), appwrite })
+  const d1 = await d1Status()
+  res.json({ ok: true, ts: Date.now(), d1 })
 })
 
 // ── Error handler ─────────────────────────────────────────────────────────────

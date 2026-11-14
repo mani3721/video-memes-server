@@ -7,7 +7,7 @@
  */
 
 import { Router } from 'express'
-import { createRow, incrementColumn, AppwriteException } from '../db/appwrite.js'
+import { createRow, incrementColumn, DbError } from '../db/d1.js'
 
 const router = Router()
 
@@ -41,7 +41,7 @@ async function notifyMilestone(meme) {
       `ms${threshold}-${meme.id}`.slice(0, 36),
     )
   } catch (err) {
-    if (!(err instanceof AppwriteException && err.code === 409)) throw err
+    if (!(err instanceof DbError && err.code === 409)) throw err
   }
 }
 
@@ -64,7 +64,7 @@ router.post('/:memeId?', (req, res) => {
 
       await notifyMilestone(meme)
     } catch (err) {
-      if (err instanceof AppwriteException && err.code === 404) return // unknown meme
+      if (err instanceof DbError && err.code === 404) return // unknown meme
       console.error('[track-download]', err.message)
     }
   })()

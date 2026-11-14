@@ -15,7 +15,7 @@
 import { Router } from 'express'
 import { DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { Query, getRow, updateRow, deleteRow, listAllRows } from '../db/appwrite.js'
+import { Query, getRow, updateRow, deleteRow, listAllRows } from '../db/d1.js'
 import { notifyNewContent } from '../lib/notifyNewContent.js'
 import { spaces, BUCKET } from '../spacesClient.js'
 import { onContentChanged, FEED_PATHS, feedPathForCategory } from '../lib/sitemap/notify.js'
@@ -81,7 +81,7 @@ router.delete('/reject/:memeId', async (req, res) => {
   try {
     await deleteRow('memes', memeId)
   } catch (delErr) {
-    console.error('[admin/reject] Appwrite delete error:', delErr.message)
+    console.error('[admin/reject] D1 delete error:', delErr.message)
     return res.status(500).json({ error: 'Failed to delete meme record.' })
   }
 

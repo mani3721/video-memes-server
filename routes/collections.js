@@ -16,9 +16,9 @@
 
 import { Router } from 'express'
 import {
-  Query, AppwriteException, getRow, createRow, updateRow, deleteRow, deleteRowsWhere,
-  listRows, listAllRows, stableId,
-} from '../db/appwrite.js'
+  Query, DbError, getRow, createRow, updateRow, deleteRow, deleteRowsWhere,
+  listRows, listAllRows,
+} from '../db/d1.js'
 import { requireAuth } from '../middleware/auth.js'
 import { addFavorite } from './favorites.js'
 
@@ -28,7 +28,6 @@ router.use(requireAuth)
 const MAX_NAME_LENGTH = 40
 const MAX_COLLECTIONS = 50
 
-const itemId = (collectionId, memeId) => stableId('ci', collectionId, memeId)
 
 function parseName(body) {
   const raw = body?.name
@@ -241,10 +240,9 @@ router.post('/:id/items', async (req, res) => {
       await createRow(
         'collection_items',
         { collection_id: id, meme_id: memeId, user_id: userId, added_at: new Date().toISOString() },
-        itemId(id, memeId),
       )
     } catch (err) {
-      if (!(err instanceof AppwriteException && err.code === 409)) throw err
+      if (!(err instanceof DbError && err.code === 409)) throw err
     }
 
     res.status(201).json({ ok: true })
@@ -264,15 +262,11 @@ router.delete('/:id/items/:memeId', async (req, res) => {
   if (!col) return
 
   try {
-    const removed = await deleteRow('collection_items', itemId(id, memeId))
-    // Rows created before the stable-ID scheme: fall back to a query delete.
-    if (!removed) {
-      await deleteRowsWhere('collection_items', [
-        Query.equal('collection_id', id),
-        Query.equal('meme_id', memeId),
-        Query.equal('user_id', userId),
-      ])
-    }
+    await deleteRowsWhere('collection_items', [
+      Query.equal('collection_id', id),
+      Query.equal('meme_id', memeId),
+      Query.equal('user_id', userId),
+    ])
     res.json({ ok: true })
   } catch (err) {
     console.error('[collections] DELETE item:', err.message)

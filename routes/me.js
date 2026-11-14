@@ -7,7 +7,7 @@
  */
 
 import { Router } from 'express'
-import { Query, getRow, createRow, upsertRow, listRows, AppwriteException } from '../db/appwrite.js'
+import { Query, getRow, createRow, upsertRow, listRows, DbError } from '../db/d1.js'
 import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
           req.user.id,
         )
       } catch (err) {
-        if (!(err instanceof AppwriteException && err.code === 409)) throw err
+        if (!(err instanceof DbError && err.code === 409)) throw err
         profile = await getRow('profiles', req.user.id)
       }
     }

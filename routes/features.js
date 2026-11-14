@@ -3,7 +3,7 @@
  * GET /api/features  — no auth required; returns public feature flags.
  */
 import { Router } from 'express'
-import { listRows, Query } from '../db/appwrite.js'
+import { listRows, Query } from '../db/d1.js'
 
 const router = Router()
 

@@ -8,7 +8,8 @@
  * requireAdmin — additionally checks profiles.role === 'admin'
  */
 
-import { userFromJwt, getRow } from '../db/appwrite.js'
+import { userFromJwt } from '../db/appwrite.js'
+import { getRow } from '../db/d1.js'
 
 async function resolveUser(req) {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
