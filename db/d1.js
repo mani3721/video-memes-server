@@ -108,7 +108,40 @@ function config() {
  * Run one SQL statement. Returns { results, meta }.
  * UNIQUE / PRIMARY KEY violations become DbError(409).
  */
-export async function sql(statement, params = []) {
+// ── Read cache ───────────────────────────────────────────────────────────────
+// D1 bills per row read, so identical SELECTs within READ_TTL_MS are served from
+// memory (and concurrent duplicates share one request). Any write clears it.
+const READ_TTL_MS = Number(process.env.D1_READ_CACHE_MS ?? 60_000)
+const COUNT_TTL_MS = Number(process.env.D1_COUNT_CACHE_MS ?? 300_000)
+const READ_CACHE_MAX = 2000
+const readCache = new Map() // key -> { at, ttl, value: Promise }
+
+export function clearReadCache() { readCache.clear() }
+
+function cachedRead(key, ttl, run) {
+  const hit = readCache.get(key)
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.value
+  const value = run()
+  readCache.set(key, { at: Date.now(), ttl, value })
+  value.catch(() => readCache.delete(key))
+  if (readCache.size > READ_CACHE_MAX) readCache.delete(readCache.keys().next().value)
+  return value
+}
+
+/** True when Cloudflare refused the query because the daily free quota is used up. */
+export function isQuotaError(err) {
+  return /exceeded D1's free tier|row read limit|row write limit/i.test(err?.message || '')
+}
+
+export async function sql(statement, params = [], { ttl } = {}) {
+  if (/^\s*SELECT/i.test(statement) && READ_TTL_MS > 0) {
+    return cachedRead(statement + '\u0000' + JSON.stringify(params), ttl ?? READ_TTL_MS, () => rawSql(statement, params))
+  }
+  readCache.clear()
+  return rawSql(statement, params)
+}
+
+async function rawSql(statement, params) {
   const { url, token } = config()
   let res
   try {
@@ -124,7 +157,8 @@ export async function sql(statement, params = []) {
   if (!res.ok || body.success === false) {
     const msg = body.errors?.map((e) => e.message).join('; ') || res.statusText
     if (/UNIQUE constraint failed|PRIMARY KEY/i.test(msg)) throw new DbError(msg, 409)
-    throw new DbError(`D1 ${res.status}: ${msg}`, res.status === 429 ? 429 : 500)
+    const quota = /exceeded D1's free tier|row read limit|row write limit/i.test(msg)
+    throw new DbError(`D1 ${res.status}: ${msg}`, quota || res.status === 429 ? 503 : 500)
   }
   const first = body.result?.[0] ?? {}
   return { results: first.results ?? [], meta: first.meta ?? {} }
@@ -210,10 +244,13 @@ function build(table, queries = [], { count = false } = {}) {
 export async function listRows(table, queries = []) {
   const hasLimit = queries.some((q) => q.op === 'limit')
   const q = hasLimit ? queries : [...queries, Query.limit(25)]
-  const { s, params } = build(table, q, { count: true })
+  // No COUNT(*) OVER () — it makes SQLite read every matching row on every page.
+  const { s, params } = build(table, q)
   const { results } = await sql(s, params)
-  let total = results[0]?.__total
-  if (total === undefined) total = await countRows(table, queries)
+  const limit = Number(q.find((x) => x.op === 'limit')?.n)
+  const offset = Number(q.find((x) => x.op === 'offset')?.n || 0)
+  // A short page tells us the total for free; otherwise use a (long-cached) count.
+  const total = results.length < limit ? offset + results.length : await countRows(table, queries)
   return { rows: results.map((r) => toPlain(table, r)), total: Number(total) }
 }
 
@@ -223,6 +260,7 @@ export async function countRows(table, queries = []) {
   const { results } = await sql(
     `SELECT COUNT(*) AS n FROM ${ident(table)}${filters.length ? ` WHERE ${filters.join(' AND ')}` : ''}`,
     params,
+    { ttl: COUNT_TTL_MS },
   )
   return Number(results[0]?.n ?? 0)
 }
@@ -336,7 +374,7 @@ export async function d1Status() {
   const missing = REQUIRED.filter((k) => !process.env[k]?.trim())
   if (missing.length) return { ok: false, missing }
   try {
-    const { results } = await sql("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf%' ESCAPE '\\' AND name NOT LIKE 'sqlite%'")
+    const { results } = await sql("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf%' ESCAPE '\\' AND name NOT LIKE 'sqlite%'", [], { ttl: 0 })
     return { ok: true, tables: results[0]?.n ?? 0 }
   } catch (err) {
     return { ok: false, code: err.code ?? null, message: err.message }

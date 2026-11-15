@@ -54,6 +54,7 @@ function sortQueries(sort) {
 
 function sendError(res, label, err) {
   console.error(`[memes${label}]`, err.message)
+  if (err.code === 503) return res.status(503).set('Retry-After', '3600').json({ error: 'Database is temporarily over its daily limit. Please try again later.' })
   res.status(500).json({ error: 'Could not load memes.' })
 }
 
