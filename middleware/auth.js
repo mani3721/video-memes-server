@@ -8,18 +8,11 @@
  * requireAdmin — additionally checks profiles.role === 'admin'
  */
 
-import { userFromJwt } from '../db/appwrite.js'
 import { getRow } from '../db/d1.js'
 
-async function resolveUser(req) {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
-  if (!token) return null
-  try {
-    const u = await userFromJwt(token)
-    return { id: u.$id, email: u.email, name: u.name }
-  } catch {
-    return null
-  }
+// No auth provider is configured (Appwrite removed): every request is a guest.
+async function resolveUser() {
+  return null
 }
 
 export async function requireAuth(req, res, next) {
